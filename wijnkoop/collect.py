@@ -78,6 +78,8 @@ def collect_gall(limit: int | None = None, con=None) -> dict:
     log.info("Gall: %d products in sitemap, %d look like wine", len(urls), len(wine_urls))
     if limit:
         wine_urls = wine_urls[:limit]
+    con.execute("UPDATE run_log SET note=? WHERE id=?", (f"0 of {len(wine_urls)} pages read", run_id))
+    con.commit()
 
     today = dt.date.today().isoformat()
     ok = failed = 0
@@ -92,8 +94,9 @@ def collect_gall(limit: int | None = None, con=None) -> dict:
             failed += 1
             log.warning("Failed %s: %s", url, exc)
         if i % 25 == 0:
+            con.execute("UPDATE run_log SET pages_ok=?, pages_failed=?, note=? WHERE id=?",
+                        (ok, failed, f"{i} of {len(wine_urls)} pages read", run_id))
             con.commit()
-            con.execute("UPDATE run_log SET pages_ok=?, pages_failed=? WHERE id=?", (ok, failed, run_id))
             log.info("Gall: %d / %d pages done", i, len(wine_urls))
     con.execute(
         "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=? WHERE id=?",
