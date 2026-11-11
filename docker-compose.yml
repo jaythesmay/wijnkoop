@@ -1,0 +1,15 @@
+# Paste this into Container Station: Applications > Create.
+services:
+  wijnkoop:
+    image: ghcr.io/jaythesmay/wijnkoop:latest
+    container_name: wijnkoop
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - /share/wijnkoop:/data
+    environment:
+      TZ: Europe/Amsterdam
+      WIJNKOOP_RUN_WEEKDAY: "0"   # 0 = Monday
+      WIJNKOOP_RUN_HOUR: "1"      # 01:00 at night
+    mem_limit: 512m

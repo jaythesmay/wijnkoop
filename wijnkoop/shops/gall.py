@@ -1,0 +1,225 @@
+"""Gall & Gall (gall.nl) collector.
+
+Reads the product sitemap (allowed by robots.txt) and each wine page.
+Never uses the site search or filter pages, which robots.txt disallows.
+"""
+import json
+import re
+from dataclasses import dataclass, field
+from urllib.parse import unquote
+
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
+
+BASE = "https://www.gall.nl"
+SITEMAP_INDEX = BASE + "/sitemap_index.xml"
+SHOP_NAME = "Gall & Gall"
+
+# URL looks like /catena-adrianna-malbec-fortuna-terrae-rood-75cl-100374.html
+URL_RE = re.compile(
+    r"/(?P<slug>[^/]+?)-(?P<volume>\d+(?:\.\d+)?)cl-(?P<pid>\d{5,7})\.html$"
+)
+COLOUR_TOKENS = {"rood": "red", "wit": "white", "rose": "rosé", "ros%C3%A9": "rosé"}
+
+SPEC_LABELS = {
+    "land": "country",
+    "oorsprong": "country",
+    "regio": "region",
+    "druif": "grapes",
+    "druiven": "grapes",
+    "druivensoort": "grapes",
+    "jaargang": "vintage",
+    "inhoud": "volume",
+    "alcoholpercentage": "alcohol",
+    "alcohol": "alcohol",
+    "producent": "producer",
+    "wijnhuis": "producer",
+    "leverancier": "producer",
+    "stijl": "style",
+    "smaak": "style",
+    "soort": "kind",
+}
+
+PROMO_RE = re.compile(
+    r"(\d+e\s+fles\s+\d+%\s+korting|\d+\s+halen,?\s+\d+\s+betalen|\d+\s+voor\s+[\d.,]+|\d+%\s+korting|"
+    r"\d+\s+flessen\s+voor\s+[\d.,]+)",
+    re.IGNORECASE,
+)
+AWARDS_RE = re.compile(r"(\d+)\s+keer\s+bekroond", re.IGNORECASE)
+PRICE_META_RE = re.compile(r"voor\s+(\d+[.,]\d{2})\s*EUR", re.IGNORECASE)
+
+
+@dataclass
+class GallProduct:
+    url: str
+    product_id: str
+    title: str
+    colour: str | None = None
+    volume_cl: float | None = None
+    price: float | None = None
+    promotion: str | None = None
+    in_stock_online: bool | None = None
+    awards_count: int | None = None
+    specs: dict = field(default_factory=dict)
+
+    @property
+    def is_wine(self) -> bool:
+        return self.colour is not None or "wijn" in (self.specs.get("kind") or "").lower()
+
+
+def parse_url(url: str) -> dict | None:
+    m = URL_RE.search(url)
+    if not m:
+        return None
+    slug = m.group("slug")
+    tokens = slug.split("-")
+    colour = None
+    for tok in reversed(tokens[-3:]):
+        if tok in COLOUR_TOKENS:
+            colour = COLOUR_TOKENS[tok]
+            break
+    return {
+        "slug": unquote(slug),
+        "volume_cl": float(m.group("volume")),
+        "product_id": m.group("pid"),
+        "colour": colour,
+    }
+
+
+def product_urls_from_sitemap(xml: str) -> list[str]:
+    locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)
+    return [u for u in locs if parse_url(u)]
+
+
+def child_sitemaps(index_xml: str) -> list[str]:
+    locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", index_xml)
+    return [u for u in locs if "product" in u]
+
+
+def _to_float(text: str | None) -> float | None:
+    if not text:
+        return None
+    m = re.search(r"\d+(?:[.,]\d+)?", text.replace("\xa0", " "))
+    if not m:
+        return None
+    return float(m.group(0).replace(",", "."))
+
+
+def _jsonld_products(tree: HTMLParser):
+    for node in tree.css('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(node.text())
+        except (ValueError, TypeError):
+            continue
+        items = data if isinstance(data, list) else data.get("@graph", [data])
+        for item in items:
+            if isinstance(item, dict) and item.get("@type") in ("Product", ["Product"]):
+                yield item
+
+
+def _spec_pairs(tree: HTMLParser):
+    """Yield (label, value) pairs from definition lists and two-cell tables/rows."""
+    for dl in tree.css("dl"):
+        dts, dds = dl.css("dt"), dl.css("dd")
+        for dt, dd in zip(dts, dds):
+            yield dt.text(strip=True), dd.text(strip=True)
+    for tr in tree.css("tr"):
+        cells = tr.css("th, td")
+        if len(cells) == 2:
+            yield cells[0].text(strip=True), cells[1].text(strip=True)
+    # Generic "label / value" siblings, e.g. <div><span>Land</span><span>Spanje</span></div>
+    for node in tree.css("li, div, p"):
+        kids = [k for k in node.iter() if k.tag in ("span", "div", "strong", "b", "p", "dt", "dd")]
+        if len(kids) == 2:
+            a, b = kids[0].text(strip=True), kids[1].text(strip=True)
+            if a and b and len(a) < 30 and len(b) < 120:
+                yield a, b
+
+
+def _specs_from_text(text: str) -> dict:
+    """Fallback: 'Label: value' or 'Label\nvalue' patterns in the visible text."""
+    specs = {}
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        label, _, value = line.partition(":")
+        key = SPEC_LABELS.get(label.strip().lower())
+        if key and value.strip():
+            specs.setdefault(key, value.strip())
+        elif SPEC_LABELS.get(line.lower()) and i + 1 < len(lines):
+            specs.setdefault(SPEC_LABELS[line.lower()], lines[i + 1])
+    return specs
+
+
+def parse_product(url: str, html: str) -> GallProduct:
+    info = parse_url(url) or {}
+    tree = HTMLParser(html)
+
+    title = ""
+    h1 = tree.css_first("h1")
+    if h1:
+        title = h1.text(strip=True)
+    if not title:
+        og = tree.css_first('meta[property="og:title"]')
+        title = (og.attributes.get("content") or "") if og else ""
+    if not title:
+        title = info.get("slug", "").replace("-", " ")
+
+    product = GallProduct(
+        url=url,
+        product_id=info.get("product_id", ""),
+        title=title,
+        colour=info.get("colour"),
+        volume_cl=info.get("volume_cl"),
+    )
+
+    # Price: structured data first, then meta tags, then the meta description.
+    for item in _jsonld_products(tree):
+        offers = item.get("offers") or {}
+        if isinstance(offers, list):
+            offers = offers[0] if offers else {}
+        product.price = _to_float(str(offers.get("price") or "")) or product.price
+        avail = str(offers.get("availability") or "")
+        if avail:
+            product.in_stock_online = "InStock" in avail
+        brand = item.get("brand")
+        if isinstance(brand, dict):
+            brand = brand.get("name")
+        if brand:
+            product.specs.setdefault("producer", brand)
+    if product.price is None:
+        for sel in ('meta[property="product:price:amount"]', 'meta[itemprop="price"]',
+                    '[itemprop="price"]'):
+            node = tree.css_first(sel)
+            if node:
+                product.price = _to_float(node.attributes.get("content") or node.text())
+                if product.price:
+                    break
+    if product.price is None:
+        desc = tree.css_first('meta[name="description"]')
+        if desc:
+            m = PRICE_META_RE.search(desc.attributes.get("content") or "")
+            if m:
+                product.price = _to_float(m.group(1))
+
+    body = tree.body
+    text = body.text(separator="\n") if body else ""
+
+    for label, value in _spec_pairs(tree):
+        key = SPEC_LABELS.get(label.strip().rstrip(":").lower())
+        if key and value:
+            product.specs.setdefault(key, value)
+    for key, value in _specs_from_text(text).items():
+        product.specs.setdefault(key, value)
+
+    m = PROMO_RE.search(text)
+    if m:
+        product.promotion = re.sub(r"\s+", " ", m.group(1))
+    m = AWARDS_RE.search(text)
+    if m:
+        product.awards_count = int(m.group(1))
+    if product.in_stock_online is None:
+        low = text.lower()
+        if "online uitverkocht" in low or "online niet op voorraad" in low:
+            product.in_stock_online = False
+        elif "in winkelmand" in low or "online op voorraad" in low:
+            product.in_stock_online = True
+    return product
