@@ -66,3 +66,15 @@ def test_settings_file_and_due(tmp_path, monkeypatch):
     assert not mail.mail_due(con, wed)
     assert not mail.mail_due(con, dt.datetime(2026, 11, 24, 20, 0))
     assert mail.mail_due(con, dt.datetime(2026, 11, 26, 7, 30))  # NAS was off on Wednesday: catch up
+
+
+def test_mail_gives_up_after_three_failures(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MAIL_SETTINGS", tmp_path / "mail.ini")
+    mail.save_settings("me@example.com", "wrong", "me@example.com")
+    con = db.connect(tmp_path / "t.db")
+    wed = dt.datetime(2026, 11, 18, 12, 0)
+    for hour in (8, 9, 10):
+        assert mail.mail_due(con, wed)
+        con.execute("INSERT INTO run_log (job, started) VALUES ('mail', ?)", (f"2026-11-18T{hour:02d}:00:00",))
+    assert not mail.mail_due(con, wed)
+    assert mail.mail_due(con, dt.datetime(2026, 11, 25, 8, 30))

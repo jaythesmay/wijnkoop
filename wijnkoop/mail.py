@@ -162,10 +162,11 @@ def mail_due(con, now: dt.datetime) -> bool:
     """Due once per week from Wednesday 08:00; sent later if the NAS was off then."""
     if not config.MAIL_SETTINGS.exists():
         return False
-    row = con.execute(
-        "SELECT 1 FROM run_log WHERE job='mail' AND finished IS NOT NULL AND started >= ? LIMIT 1",
-        (mail_slot(now).isoformat(timespec="seconds"),)).fetchone()
-    return row is None
+    since = mail_slot(now).isoformat(timespec="seconds")
+    done, failed = con.execute(
+        "SELECT COUNT(finished), COUNT(*) - COUNT(finished) FROM run_log WHERE job='mail' AND started >= ?",
+        (since,)).fetchone()
+    return done == 0 and failed < 3  # after 3 failed tries, wait for next week
 
 
 def run_mail(con, now: dt.datetime | None = None) -> str:
