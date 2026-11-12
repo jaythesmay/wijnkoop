@@ -8,6 +8,7 @@ import time
 from . import config, db, scores
 from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_gall
+from .mail import mail_due, run_mail, save_settings, send_overview
 from .fetch import PoliteClient
 from .shops import gall
 
@@ -109,6 +110,16 @@ def cmd_scheduler(args):
                 match_awards(con)
                 scores.recompute(con)
                 continue
+            if mail_due(con, now):
+                try:
+                    run_mail(con, now)
+                except Exception:
+                    # Wrong password or no internet: note it and try again in an hour.
+                    log.exception("Weekly e-mail failed")
+                    con.execute("UPDATE run_log SET note='failed, see log' WHERE job='mail' AND finished IS NULL")
+                    con.commit()
+                    time.sleep(3600)
+                continue
             if awards_due(con, now):
                 run_award_import(con)
                 continue
@@ -123,6 +134,32 @@ def cmd_scheduler(args):
             log.info("Next Gall run: %s", nxt.strftime("%A %d %B %Y %H:%M"))
             announced = nxt
         time.sleep(600)
+
+
+def cmd_mail_setup(args):
+    import getpass
+
+    print("Weekly e-mail via Gmail. You need a Gmail app password (16 letters),")
+    print("made at https://myaccount.google.com/apppasswords")
+    username = input("Gmail address to send from: ").strip()
+    to = input("Send the overview to (Enter = same address): ").strip() or username
+    app_password = getpass.getpass("App password (not shown while typing): ").strip()
+    app_url = input("Address of the app (Enter = http://192.168.2.19:8001): ").strip() or "http://192.168.2.19:8001"
+    save_settings(username, app_password, to, app_url)
+    print(f"Saved in {config.MAIL_SETTINGS}. Sending a test e-mail now...")
+    con = db.connect()
+    try:
+        print(send_overview(con))
+    except Exception as exc:
+        print(f"Sending failed: {exc}")
+        print("Check the app password and run mail-setup again.")
+    con.close()
+
+
+def cmd_mail(args):
+    con = db.connect()
+    print(send_overview(con))
+    con.close()
 
 
 def cmd_awards(args):
@@ -155,6 +192,8 @@ def main(argv=None):
     p.add_argument("--source", action="append", choices=["iwc", "cmb"])
     p.add_argument("--match-only", action="store_true", help="only redo the linking to wines")
     p.set_defaults(func=cmd_awards)
+    sub.add_parser("mail-setup", help="set up the weekly e-mail and send a test").set_defaults(func=cmd_mail_setup)
+    sub.add_parser("mail", help="send the weekly overview e-mail now").set_defaults(func=cmd_mail)
     sub.add_parser("scheduler", help="run the weekly schedule forever").set_defaults(func=cmd_scheduler)
     args = parser.parse_args(argv)
     args.func(args)
