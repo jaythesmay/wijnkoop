@@ -207,7 +207,9 @@ IMPORTERS = {"iwc": import_iwc, "cmb": import_cmb}
 def years_to_read(con, source: str, this_year: int) -> list[int]:
     """This year and last year, plus any of the two years before that are still missing
     (they feed the track record; an import cut short by the NAS switching off is redone)."""
-    have = {r[0] for r in con.execute("SELECT DISTINCT year FROM award WHERE source=?", (source,))}
+    con.execute("CREATE TABLE IF NOT EXISTS award_import (source TEXT, year INTEGER, finished_on TEXT, "
+                "PRIMARY KEY (source, year))")
+    have = {r[0] for r in con.execute("SELECT year FROM award_import WHERE source=?", (source,))}
     older = [y for y in (this_year - 3, this_year - 2) if y not in have]
     return older + [this_year - 1, this_year]
 
@@ -226,6 +228,8 @@ def run_award_import(con=None, sources=("iwc", "cmb"), today: dt.date | None = N
             con.commit()
             try:
                 n = IMPORTERS[source](con, year)
+                con.execute("INSERT OR REPLACE INTO award_import (source, year, finished_on) VALUES (?,?,?)",
+                            (source, year, today.isoformat()))
                 new += n
                 notes.append(f"{source.upper()} {year}: {n} new")
             except NotAllowed as exc:

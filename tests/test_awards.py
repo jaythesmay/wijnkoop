@@ -115,6 +115,9 @@ def test_years_to_read(tmp_path):
     assert importer.years_to_read(con, "iwc", 2026) == [2023, 2024, 2025, 2026]
     add_award(con, "A", "B", 2020)
     con.execute("UPDATE award SET year=2023")
+    # a year cut short (awards present, but not finished) is read again
+    assert importer.years_to_read(con, "iwc", 2026) == [2023, 2024, 2025, 2026]
+    con.execute("INSERT INTO award_import VALUES ('iwc', 2023, '2026-11-12')")
     assert importer.years_to_read(con, "iwc", 2026) == [2024, 2025, 2026]
 
 
