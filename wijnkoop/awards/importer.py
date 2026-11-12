@@ -29,6 +29,12 @@ and the of de del della dei la le les l di da do dos das du d y e et und van von
 wine wines winery vineyard vineyards estate estates bodega bodegas cantina cantine azienda agricola vinicola
 vinhos vins vini family famille group company cellars cellar weingut domaine domaines maison maisons
 societa sociedade agro pecuaria cooperative cooperativa vignerons producteurs
+chateau chateaux castello castillo quinta tenuta tenute cave caves grand saint sainte sant santa san
+vina vinas vinedos vigna vigneti finca hacienda
+""".split())
+# Colour words say nothing about which wine it is once the colours agree.
+COLOUR_WORDS = set("""
+rose rosado rosato rouge red tinto rosso blanc white blanco bianco branco wit rood
 """.split())
 
 
@@ -54,16 +60,15 @@ class Matcher:
         ).fetchall()
         for r in rows:
             pw = _words(r["producer"])
-            nw = set(cuvee_key(r["name"]).split())
+            nw = set(cuvee_key(r["name"]).split()) - COLOUR_WORDS
             self.cuvees[r["id"]] = (r["name"], pw, nw, r["colour"])
-            for w in pw | nw:
-                if w not in STOP:
-                    self.by_word[w].add(r["id"])
+            for w in pw or (set(cuvee_key(r["name"]).split()[:2]) - STOP):
+                self.by_word[w].add(r["id"])
 
     def best(self, rec: dict):
         """Return (cuvee_id, score) for the best shop wine, or (None, 0)."""
         pa = _words(rec.get("producer"))
-        na = set(cuvee_key(rec["name"]).split())
+        na = set(cuvee_key(rec["name"]).split()) - COLOUR_WORDS
         candidates = set()
         for w in pa:
             candidates |= self.by_word.get(w, set())
@@ -72,7 +77,10 @@ class Matcher:
             name, pw, nw, colour = self.cuvees[cid]
             if rec.get("colour") and colour and rec["colour"] != colour:
                 continue
-            if not pa & (pw | nw):
+            # The award's producer must name the shop wine's producer (or, when the shop
+            # gives no producer, the first words of the wine's name).
+            first = set(cuvee_key(name).split()[:2]) - STOP
+            if not pa & (pw or first):
                 continue
             left = " ".join(sorted(na - pa - pw))
             right = " ".join(sorted(nw - pa - pw))

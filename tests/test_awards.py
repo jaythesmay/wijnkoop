@@ -136,3 +136,23 @@ def test_import_iwc_walks_pages(tmp_path, monkeypatch):
     assert importer.import_iwc(con, 2026, client=client) == 20
     assert client.asked == [iwc.list_url(2026, 95), iwc.list_url(2026, 96)]
     assert importer.import_iwc(con, 2026, client=client) == 0  # nothing twice
+
+
+def test_matching_real_cases(tmp_path):
+    """Cases seen when matching real IWC/CMB results against Loes's wine list."""
+    con = db.connect(tmp_path / "t.db")
+    shop_wine(con, 1, "Domaine de l'Amaurigue Rosé", "Domaine de l'Amaurigue", colour="rosé", vintage=2025)
+    shop_wine(con, 2, "M. Chapoutier Côtes du Rhône", "M. Chapoutier", vintage=2024)
+    shop_wine(con, 3, "Ondarre Rioja Gran Reserva", "Ondarre", vintage=2019)
+    shop_wine(con, 4, "Les Eclats De Branas", "Château Branas Grand Poujeaux", vintage=2022)
+    add_award(con, "Domaine de l'Amaurigue", "Domaine de l'Amaurigue", 2025, colour="rosé", source="cmb")
+    add_award(con, "M. Chapoutier", "Côtes du Rhône Rouge", 2024, colour="red", source="cmb")
+    add_award(con, "El Coto De Rioja", "Imaz Gran Reserva", 2019, colour="red", source="cmb")
+    add_award(con, "Château Branaire Ducru", "Eclat de Branaire-Ducru", 2022, colour="red", source="cmb")
+    importer.match_awards(con, today=dt.date(2026, 11, 12))
+    rows = con.execute("""SELECT a.name_raw, w.name, m.confirmed FROM award_match m
+                          JOIN award a ON a.id = m.award_id JOIN wine w ON w.id = m.wine_id ORDER BY a.id""")
+    assert [tuple(r) for r in rows] == [
+        ("Domaine de l'Amaurigue", "Domaine de l'Amaurigue Rosé", 1),
+        ("Côtes du Rhône Rouge", "M. Chapoutier Côtes du Rhône", 1),
+    ]
