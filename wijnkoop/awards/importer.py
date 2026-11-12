@@ -221,6 +221,9 @@ def run_award_import(con=None, sources=("iwc", "cmb"), today: dt.date | None = N
     new, failed, notes = 0, 0, []
     for source in sources:
         for year in years_to_read(con, source, today.year):
+            con.execute("UPDATE run_log SET note=? WHERE id=?",
+                        ("; ".join(notes + [f"busy with {source.upper()} {year}"]), run_id))
+            con.commit()
             try:
                 n = IMPORTERS[source](con, year)
                 new += n
