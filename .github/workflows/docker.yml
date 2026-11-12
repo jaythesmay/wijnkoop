@@ -23,9 +23,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "built=$(TZ=Europe/Amsterdam date '+%-d %b %Y %H:%M')" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.name.outputs.image }}:latest
+          build-args: |
+            BUILD_DATE=${{ steps.name.outputs.built }}
+            GIT_SHA=${{ github.sha }}
