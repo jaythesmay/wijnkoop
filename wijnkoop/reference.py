@@ -70,12 +70,10 @@ POINTS_RE = re.compile(r"(\d{2,3}(?:[.,]\d)?)\s*(?:/\s*100|punten|points|pts|ptn
 POINTS20_RE = re.compile(r"(\d{1,2}(?:[.,]\d)?)\s*/\s*20")
 YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
 
-# Delivery costs per shop. Gall: free from EUR 55 and a minimum order of EUR 20 are
-# printed on every product page; the cost below the free limit is a placeholder.
+# Delivery costs per shop.
 SHOPS = [
     ("Gall & Gall", "https://www.gall.nl", 4.95, 55.0, 20.0,
-     "Free from EUR 55 and minimum order EUR 20 are read from gall.nl; "
-     "the EUR 4.95 below EUR 55 is an estimate."),
+     "EUR 4.95 for orders of EUR 20 to 55, free from EUR 55 (confirmed by Loes, Nov 2026)."),
 ]
 
 
