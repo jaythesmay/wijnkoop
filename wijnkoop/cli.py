@@ -42,25 +42,62 @@ def cmd_check(args):
     print(f"Raw pages saved in {config.SAMPLES_DIR}")
 
 
-def _next_run(now: dt.datetime) -> dt.datetime:
-    days = (config.RUN_WEEKDAY - now.weekday()) % 7
-    run = (now + dt.timedelta(days=days)).replace(hour=config.RUN_HOUR, minute=0, second=0, microsecond=0)
-    if run <= now:
-        run += dt.timedelta(days=7)
-    return run
+def _slot(now: dt.datetime, offset_weeks: int = 0) -> dt.datetime:
+    """The most recent scheduled moment at or before now (plus offset_weeks)."""
+    days = (now.weekday() - config.RUN_WEEKDAY) % 7
+    slot = (now - dt.timedelta(days=days)).replace(hour=config.RUN_HOUR, minute=0, second=0, microsecond=0)
+    if slot > now:
+        slot -= dt.timedelta(days=7)
+    return slot + dt.timedelta(weeks=offset_weeks)
+
+
+def run_is_due(con, now: dt.datetime) -> bool:
+    """Due when no Gall run has finished since the latest scheduled moment.
+
+    This also catches up on a run that was missed because the NAS was off,
+    and resumes a run that was interrupted.
+    """
+    row = con.execute(
+        "SELECT 1 FROM run_log WHERE job='gall' AND finished IS NOT NULL AND started >= ? LIMIT 1",
+        (_slot(now).isoformat(timespec="seconds"),),
+    ).fetchone()
+    if row:
+        return False
+    unfinished = con.execute(
+        "SELECT 1 FROM run_log WHERE job='gall' AND finished IS NULL LIMIT 1"
+    ).fetchone()
+    any_finished = con.execute(
+        "SELECT 1 FROM run_log WHERE job='gall' AND finished IS NOT NULL LIMIT 1"
+    ).fetchone()
+    # A brand-new install waits for its first scheduled moment, unless a run was started and broke off.
+    return bool(unfinished or any_finished)
 
 
 def cmd_scheduler(args):
     log = logging.getLogger("wijnkoop")
     while True:
-        run = _next_run(dt.datetime.now())
-        log.info("Next Gall run: %s", run.strftime("%A %d %B %Y %H:%M"))
-        while dt.datetime.now() < run:
-            time.sleep(min(600, max(1, (run - dt.datetime.now()).total_seconds())))
+        now = dt.datetime.now()
+        con = db.connect()
+        due = run_is_due(con, now)
+        con.close()
+        if due:
+            try:
+                collect_gall()
+                continue
+            except Exception:
+                log.exception("Gall run failed, trying again in 1 hour")
+                time.sleep(3600)
+                continue
+        nxt = _slot(now, 1)
+        log.info("Next Gall run: %s", nxt.strftime("%A %d %B %Y %H:%M"))
+        while dt.datetime.now() < nxt:
+            time.sleep(min(600, max(1, (nxt - dt.datetime.now()).total_seconds())))
+        # Fresh scheduled run: start over instead of resuming.
         try:
-            collect_gall()
+            collect_gall(resume=False)
         except Exception:
-            log.exception("Gall run failed")
+            log.exception("Gall run failed, trying again in 1 hour")
+            time.sleep(3600)
 
 
 def main(argv=None):
