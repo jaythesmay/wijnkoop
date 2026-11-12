@@ -60,15 +60,35 @@ def save_product(con, shop_id: int, p: gall.GallProduct, today: str):
     )
 
 
-def collect_gall(limit: int | None = None, con=None) -> dict:
+def _open_run(con, resume: bool):
+    """Return (run_id, skip_since_date, ok, failed). Reuses a recent unfinished run when resuming."""
+    if resume:
+        row = con.execute(
+            """SELECT id, started, pages_ok, pages_failed FROM run_log
+               WHERE job='gall' AND finished IS NULL AND started >= ?
+               ORDER BY started DESC LIMIT 1""",
+            ((dt.datetime.now() - dt.timedelta(days=8)).isoformat(timespec="seconds"),),
+        ).fetchone()
+        if row:
+            log.info("Gall: resuming the run that started %s", row["started"])
+            return row["id"], row["started"][:10], row["pages_ok"] or 0, row["pages_failed"] or 0
+    # Older unfinished runs will never be resumed: mark them.
+    con.execute(
+        "UPDATE run_log SET note='interrupted' WHERE job='gall' AND finished IS NULL"
+    )
+    started = dt.datetime.now().isoformat(timespec="seconds")
+    run_id = con.execute("INSERT INTO run_log (job, started) VALUES ('gall', ?)", (started,)).lastrowid
+    return run_id, None, 0, 0
+
+
+def collect_gall(limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
     con = con or db.connect()
     con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES (?, ?)", (gall.SHOP_NAME, gall.BASE))
     shop_id = con.execute("SELECT id FROM shop WHERE name=?", (gall.SHOP_NAME,)).fetchone()["id"]
-    started = dt.datetime.now().isoformat(timespec="seconds")
-    run_id = con.execute("INSERT INTO run_log (job, started) VALUES ('gall', ?)", (started,)).lastrowid
+    run_id, skip_since, ok, failed = _open_run(con, resume and not limit)
     con.commit()
 
-    client = PoliteClient(gall.BASE)
+    client = client or PoliteClient(gall.BASE)
     log.info("Gall: waiting %.0f s between pages", client.delay)
     urls = []
     for sm in gall.child_sitemaps(client.get(gall.SITEMAP_INDEX)):
@@ -78,10 +98,23 @@ def collect_gall(limit: int | None = None, con=None) -> dict:
     log.info("Gall: %d products in sitemap, %d look like wine", len(urls), len(wine_urls))
     if limit:
         wine_urls = wine_urls[:limit]
+    total = len(wine_urls)
+    if skip_since:
+        done = {
+            r[0] for r in con.execute(
+                "SELECT shop_product_id FROM offer WHERE shop_id=? AND last_seen >= ?", (shop_id, skip_since)
+            )
+        }
+        wine_urls = [u for u in wine_urls if gall.parse_url(u)["product_id"] not in done]
+        log.info("Gall: %d pages already read in this run, %d to go", total - len(wine_urls), len(wine_urls))
+    already = total - len(wine_urls)
+    if skip_since:
+        ok = already  # pages read before the interruption count as done
+    con.execute("UPDATE run_log SET note=? WHERE id=?", (f"{already} of {total} pages read", run_id))
+    con.commit()
 
     today = dt.date.today().isoformat()
-    ok = failed = 0
-    for i, url in enumerate(wine_urls, 1):
+    for i, url in enumerate(wine_urls, already + 1):
         try:
             product = gall.parse_product(url, client.get(url))
             save_product(con, shop_id, product, today)
@@ -92,12 +125,13 @@ def collect_gall(limit: int | None = None, con=None) -> dict:
             failed += 1
             log.warning("Failed %s: %s", url, exc)
         if i % 25 == 0:
+            con.execute("UPDATE run_log SET pages_ok=?, pages_failed=?, note=? WHERE id=?",
+                        (ok, failed, f"{i} of {total} pages read", run_id))
             con.commit()
-            con.execute("UPDATE run_log SET pages_ok=?, pages_failed=? WHERE id=?", (ok, failed, run_id))
-            log.info("Gall: %d / %d pages done", i, len(wine_urls))
+            log.info("Gall: %d / %d pages done", i, total)
     con.execute(
-        "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=? WHERE id=?",
-        (dt.datetime.now().isoformat(timespec="seconds"), ok, failed, run_id),
+        "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=? WHERE id=?",
+        (dt.datetime.now().isoformat(timespec="seconds"), ok, failed, f"{total} of {total} pages read", run_id),
     )
     con.commit()
     log.info("Gall: finished, %d ok, %d failed", ok, failed)
