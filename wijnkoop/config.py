@@ -18,3 +18,9 @@ MIN_DELAY = float(os.environ.get("WIJNKOOP_MIN_DELAY", "5"))
 # Weekly schedule: day (0=Monday) and hour (local time) of the shop run.
 RUN_WEEKDAY = int(os.environ.get("WIJNKOOP_RUN_WEEKDAY", "0"))
 RUN_HOUR = int(os.environ.get("WIJNKOOP_RUN_HOUR", "1"))
+
+# Weekly overview e-mail: day (2=Wednesday) and hour. Mail settings live in
+# /data/mail.ini on the NAS (written by "python -m wijnkoop mail-setup"), never in the code.
+MAIL_WEEKDAY = int(os.environ.get("WIJNKOOP_MAIL_WEEKDAY", "2"))
+MAIL_HOUR = int(os.environ.get("WIJNKOOP_MAIL_HOUR", "8"))
+MAIL_SETTINGS = DATA_DIR / "mail.ini"

@@ -19,6 +19,7 @@ Design: see the "WijnKoop – app design" document.
 - Scores: awards and critic points (silver and up) combined with competition weights
   (`wijnkoop/reference.py`), value against price, and a deal rule based on the 90-day
   median price for an order of 6 bottles (`wijnkoop/scores.py`).
+- Sends the weekly overview by e-mail on Wednesday at 08:00 (later the same week if the NAS was off).
 - Older databases are upgraded automatically when the container starts.
 - Award results: IWC (with points) and Concours Mondial are read automatically, weekly in
   the award seasons (March, late May to June, September, late November) and monthly otherwise.
@@ -32,6 +33,8 @@ Design: see the "WijnKoop – app design" document.
 | `python -m wijnkoop collect` | Reads all wines now (takes hours) |
 | `python -m wijnkoop awards` | Reads IWC and Concours Mondial results now and links them to the shop wines |
 | `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
+| `python -m wijnkoop mail-setup` | Sets up the weekly e-mail (Gmail app password, stored only in `/data/mail.ini`) and sends a test |
+| `python -m wijnkoop mail` | Sends the weekly overview e-mail now |
 | `python -m wijnkoop scores` | Recomputes scores, value and deals (also done after every run) |
 
 ## Development
