@@ -1,5 +1,8 @@
 title: WijnKoop
+source: "App version __BUILD_DATE__"
+source_url: "https://github.com/jaythesmay/wijnkoop/commit/__GIT_SHA__"
 description_html: |-
+  <p><strong>App version: __BUILD_DATE__</strong> (code __GIT_SHORT__)</p>
   Your private wine finder. Start with <a href="/wijnkoop/wine_list">the wine list</a>
   or one of the saved searches below. Phase 1: Gall &amp; Gall prices only; award scores follow in phase 2.
 databases:
