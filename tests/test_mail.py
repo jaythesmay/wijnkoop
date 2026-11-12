@@ -45,7 +45,7 @@ def test_overview_mail(tmp_path):
     assert "New awards for wines in the shop" in body
     assert body.count("Veuve Clicquot La Grande Dame Brut 2018") == 1
     assert "2e fles 50% korting" in body
-    assert "http://nas:8001/wijnkoop/weekly_overview" in body
+    assert "http://nas:8001/week" in body
     html = msg.get_body(("html",)).get_content()
     assert "<table" in html and "Zilver met 90 punten" in html
 

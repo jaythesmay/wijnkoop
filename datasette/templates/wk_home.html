@@ -1,0 +1,39 @@
+{% extends "wk_base.html" %}
+{% import "wk_macros.html" as m with context %}
+{% block content %}
+<div class="stats">
+  <a class="stat" href="/find?unscored=1&sort=price"><b>{{ wines }}</b><span>wines in the shops</span></a>
+  <a class="stat" href="/find?gold=1"><b>{{ gold_count }}</b><span>gold or better</span></a>
+  <a class="stat" href="/find?deal=1"><b>{{ deal_count }}</b><span>deals with a score</span></a>
+</div>
+
+<h2>Quick finds</h2>
+<div class="chips">
+  <a class="chip" href="/find?gold=1&max_price=10">Gold under €10</a>
+  <a class="chip" href="/find?gold=1&max_price=15">Gold under €15</a>
+  <a class="chip" href="/find?max_price=8">Best under €8</a>
+  <a class="chip" href="/find?colour=red&max_price=12">Red under €12</a>
+  <a class="chip" href="/find?colour=white&max_price=12">White under €12</a>
+  <a class="chip" href="/find?colour=rosé&max_price=10">Rosé under €10</a>
+  <a class="chip" href="/find?deal=1&sort=value">All deals</a>
+</div>
+
+<h2>Gold or better, best value first</h2>
+{% if gold %}{{ m.cards(gold, two=True) }}
+{% else %}<div class="empty">No gold-medal wines known yet. They appear after the award download and the next shop run.</div>{% endif %}
+
+{% if deals %}
+<h2>Deals on award winners</h2>
+{{ m.cards(deals, two=True) }}
+{% endif %}
+
+<details class="box">
+  <summary>How to read a card</summary>
+  <p>The square on the left is the <b>score</b>: all medals and critic points for this wine combined, on a 100-point scale.
+  It turns gold when the wine won a gold medal (or better) or got 93+ points from a critic.</p>
+  <p>The price is <b>per bottle when you buy 6</b> of this wine, with the shop's promotion applied.</p>
+  <p>The label compares the price with what wines with this score usually cost
+  ({{ 'learned from your wines' if rule.learned else 'starting rule' }}: about {{ rule.per_point_pct }}% more per point).
+  <b>Top buy</b> means you pay two thirds or less of the usual price. <a href="/how">More about the scores</a>.</p>
+</details>
+{% endblock %}

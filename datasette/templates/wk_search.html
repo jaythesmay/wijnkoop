@@ -1,0 +1,13 @@
+{% extends "wk_base.html" %}
+{% import "wk_macros.html" as m with context %}
+{% block content %}
+{% if q %}
+<h1>“{{ q }}”</h1>
+{% if cards %}<p class="lead">{{ cards|length }} match{{ 'es' if cards|length != 1 }}, closest first. Spelling does not need to be exact.</p>
+{{ m.cards(cards, two=True) }}
+{% else %}<div class="empty">Nothing found for “{{ q }}”. Try the producer, a grape or part of the name.</div>{% endif %}
+{% else %}
+<h1>Search</h1>
+<p class="lead">Type a wine, producer or grape in the bar at the top. In a shop: type the first word or two from the label.</p>
+{% endif %}
+{% endblock %}

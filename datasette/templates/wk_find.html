@@ -1,0 +1,39 @@
+{% extends "wk_base.html" %}
+{% import "wk_macros.html" as m with context %}
+{% block content %}
+<h1>Find a wine</h1>
+<details class="box" {{ 'open' if not active }}>
+  <summary>Filters{% if active %} <span class="muted small">({{ total }} found)</span>{% endif %}</summary>
+  <form class="filters" method="get" action="/find" style="margin-top:12px">
+    <div class="row2">
+      <div><label for="min_price">Min € per bottle</label><input type="number" inputmode="decimal" step="0.5" min="0" id="min_price" name="min_price" value="{{ args.min_price or '' }}"></div>
+      <div><label for="max_price">Max € per bottle</label><input type="number" inputmode="decimal" step="0.5" min="0" id="max_price" name="max_price" value="{{ args.max_price or '' }}"></div>
+    </div>
+    <div class="row2">
+      <div><label for="colour">Colour</label>
+        <select id="colour" name="colour"><option value="">Any</option>
+        {% for k, v in opts.colours.items() %}<option value="{{ k }}" {{ 'selected' if args.colour == k }}>{{ v }}</option>{% endfor %}</select></div>
+      <div><label for="country">Country</label>
+        <select id="country" name="country"><option value="">Any</option>
+        {% for c, label in opts.countries.items() %}<option value="{{ c }}" {{ 'selected' if args.country == c }}>{{ label }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="row2">
+      <div><label for="grape">Grape</label><input type="text" id="grape" name="grape" value="{{ args.grape or '' }}" placeholder="e.g. Syrah"></div>
+      <div><label for="min_score">Min score</label><input type="number" inputmode="decimal" step="1" min="80" max="100" id="min_score" name="min_score" value="{{ args.min_score or '' }}" placeholder="e.g. 92"></div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" name="gold" value="1" {{ 'checked' if args.gold }}> Gold medal or better</label>
+      <label><input type="checkbox" name="deal" value="1" {{ 'checked' if args.deal }}> Deals only</label>
+      <label><input type="checkbox" name="in_stock" value="1" {{ 'checked' if args.in_stock }}> In stock online</label>
+      <label><input type="checkbox" name="unscored" value="1" {{ 'checked' if args.unscored }}> Include wines without awards</label>
+    </div>
+    <div class="row2">
+      <div><label for="sort">Sort by</label>
+        <select id="sort" name="sort">{% for k, v in opts.sorts.items() %}<option value="{{ k }}" {{ 'selected' if (args.sort or 'value') == k }}>{{ v }}</option>{% endfor %}</select></div>
+      <div style="display:flex;align-items:flex-end;gap:8px"><button class="primary" type="submit" style="flex:1">Show wines</button><a class="btn" href="/find">Reset</a></div>
+    </div>
+  </form>
+</details>
+<p class="muted small">{{ total }} wine{{ 's' if total != 1 }}{% if total > cards|length %}, showing the first {{ cards|length }}{% endif %}.</p>
+{{ m.cards(cards, two=True) }}
+{% endblock %}

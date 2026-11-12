@@ -154,7 +154,8 @@ CREATE TABLE IF NOT EXISTS wine_score (
     cuvee_avg REAL,
     producer_wines INTEGER,
     producer_avg REAL,
-    updated TEXT
+    updated TEXT,
+    gold INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS offer_score (
     offer_id INTEGER PRIMARY KEY REFERENCES offer(id),
@@ -165,7 +166,23 @@ CREATE TABLE IF NOT EXISTS offer_score (
     is_deal INTEGER,
     deal_reason TEXT,
     value REAL,
+    fair_price REAL,
+    price_quality REAL,
+    verdict TEXT,
     updated TEXT
+);
+CREATE TABLE IF NOT EXISTS setting (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+CREATE TABLE IF NOT EXISTS watch (
+    wine_id INTEGER PRIMARY KEY REFERENCES wine(id),
+    added TEXT
+);
+CREATE TABLE IF NOT EXISTS order_item (
+    offer_id INTEGER PRIMARY KEY REFERENCES offer(id),
+    qty INTEGER NOT NULL DEFAULT 1,
+    added TEXT
 );
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY,
@@ -212,6 +229,8 @@ WHERE o.is_current = 1 AND COALESCE(c.is_wine, 1) = 1;
 
 CREATE VIEW best_buys AS
 SELECT
+    o.id AS offer_id,
+    w.id AS wine_id,
     w.name AS wine,
     w.vintage,
     w.producer,
@@ -228,6 +247,15 @@ SELECT
     ws.n_awards AS awards,
     ws.best_award,
     os.value,
+    os.fair_price,
+    os.price_quality,
+    os.verdict,
+    CASE ws.gold WHEN 1 THEN 'yes' ELSE 'no' END AS gold_or_better,
+    w.grapes,
+    w.style,
+    c.category,
+    o.volume_cl,
+    o.member_price,
     ws.cuvee_vintages AS other_vintages_awarded,
     ws.cuvee_avg AS other_vintages_avg,
     ws.producer_wines AS producer_wines_awarded,
@@ -267,6 +295,7 @@ CREATE VIEW weekly_events AS
 SELECT
     e.happened_on,
     e.kind,
+    e.wine_id,
     w.name AS wine,
     w.vintage,
     s.name AS shop,
@@ -374,6 +403,22 @@ def _backup(con, path, version):
     dest.close()
 
 
+# Columns added after phase 2 went live; added on start-up when missing.
+LATER_COLUMNS = {
+    "wine_score": [("gold", "INTEGER DEFAULT 0")],
+    "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT")],
+}
+
+
+def _add_later_columns(con):
+    for table, cols in LATER_COLUMNS.items():
+        have = _columns(con, table)
+        for name, definition in cols:
+            if name not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    con.commit()
+
+
 def connect(path=None):
     path = path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -396,6 +441,7 @@ def connect(path=None):
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         con.commit()
     con.executescript(TABLES)
+    _add_later_columns(con)
     con.executescript(VIEWS)
     con.execute("PRAGMA foreign_keys = ON")
     from .reference import seed

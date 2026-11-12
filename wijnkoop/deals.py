@@ -67,3 +67,35 @@ def order_of_six(bottle_price_at_6: float, delivery_cost: float | None,
     if delivery_cost and (free_from is None or goods < free_from):
         delivery = delivery_cost
     return round(goods + delivery, 2), delivery
+
+
+def line_cost(promotion: str | None, price: float, qty: int) -> float:
+    """What qty bottles of one wine cost with the shop's promotion applied."""
+    if not price or qty <= 0:
+        return 0.0
+    t = (promotion or "").lower().replace("\xa0", " ")
+    m = re.search(r"(\d+)e\s+fles\s+(\d+)\s*%\s*korting", t)
+    if m:
+        n, pct = int(m.group(1)), int(m.group(2)) / 100
+        return round(price * (qty - (qty // n) * pct), 2)
+    m = re.search(r"(\d+)e\s+fles\s+gratis", t)
+    if m:
+        n = int(m.group(1))
+        return round(price * (qty - qty // n), 2)
+    if re.search(r"2e\s+(fles\s+)?halve\s+prijs", t):
+        return round(price * (qty - (qty // 2) * 0.5), 2)
+    m = re.search(r"(\d+)\s*\+\s*(\d+)\s+gratis", t) or re.search(r"(\d+)\s+halen,?\s+(\d+)\s+betalen", t)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        take, pay = (a + b, a) if "gratis" in m.group(0) else (a, b)
+        if take > pay:
+            return round(price * ((qty // take) * pay + qty % take), 2)
+    m = re.search(r"(\d+)\s+(?:flessen\s+)?voor\s+(?:€\s*)?(\d+(?:[.,]\d{1,2})?)", t)
+    if m:
+        n, total = int(m.group(1)), _num(m.group(2))
+        if n >= 2 and total < n * price:
+            return round((qty // n) * total + (qty % n) * price, 2)
+    m = re.search(r"(\d+)\s*%\s*korting", t)
+    if m:
+        return round(price * qty * (1 - int(m.group(1)) / 100), 2)
+    return round(price * qty, 2)

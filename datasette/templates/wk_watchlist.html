@@ -1,0 +1,8 @@
+{% extends "wk_base.html" %}
+{% import "wk_macros.html" as m with context %}
+{% block content %}
+<h1>Watchlist</h1>
+<p class="lead">Wines you are waiting on. Changes to these come first in the Wednesday e-mail and on <a href="/week">This week</a>.</p>
+{% if cards %}{{ m.cards(cards, two=True) }}
+{% else %}<div class="empty">Nothing watched yet. Tap ☆ Watch on any wine to follow its price and awards.</div>{% endif %}
+{% endblock %}

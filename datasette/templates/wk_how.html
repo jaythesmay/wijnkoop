@@ -1,0 +1,32 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>How the scores work</h1>
+<div class="panel">
+<h2 style="margin-top:0">Score</h2>
+<p>Every medal and critic score for a wine is turned into points on a 100-point scale and averaged, with the
+big competitions counting most: Decanter, IWC and IWSC count fully, Concours Mondial, Mundus Vini and the
+well-known critics count 70%, the rest 40%. A medal without points gets the middle of that competition's
+own band (an IWC gold is 96, a Concours Mondial gold is 90). Bronze and commended medals don't count.
+A wine with only one small award is pulled a little towards 88, so one lucky medal can't put it at the top.</p>
+<p><b>Gold or better</b> means a gold, grand gold, platinum or trophy from a competition, or 93+ points from a critic.</p>
+
+<h2>Price for quality</h2>
+<p>Better wine costs more, and not in a straight line: every extra point costs a fixed percentage more.
+WijnKoop works out what a wine with a given score <i>usually</i> costs and compares that with the price you pay
+per bottle when you buy 6.</p>
+<p>Right now one point is worth about <b>{{ rule.per_point_pct }}%</b> more money
+{% if rule.learned %}(learned from {{ rule.fit_wines }} wines with an award and a price).{% else %}(a starting rule; once 30 award-winning wines have a price, WijnKoop learns this from your shops).{% endif %}
+So if a 93 costs {{ 10|money }}, a 94 “should” cost about {{ example|money }}.</p>
+<table class="list">
+<tr><th>Label</th><th>Meaning</th></tr>
+<tr><td><span class="pill v-top">Top buy</span></td><td>You pay two thirds or less of what this score usually costs.</td></tr>
+<tr><td><span class="pill v-good">Good buy</span></td><td>At least 15% cheaper than usual for this score.</td></tr>
+<tr><td><span class="pill v-fair">Fair</span></td><td>About the usual price for this score.</td></tr>
+<tr><td><span class="pill v-pricey">Pricey for its score</span></td><td>You pay more than this score usually costs.</td></tr>
+</table>
+
+<h2>Deal</h2>
+<p>A deal is a price (per bottle at 6, promotion included) at least 15% below this wine's own median price of the
+last 90 days, or cheaper than in any other shop. Until there are 90 days of prices, the normal shop price is used.</p>
+</div>
+{% endblock %}
