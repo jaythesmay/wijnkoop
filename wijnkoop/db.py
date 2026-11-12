@@ -363,15 +363,29 @@ def _fill_cuvees(con):
         con.execute("UPDATE wine SET cuvee_id=? WHERE id=?", (cid, r["id"]))
 
 
+def _backup(con, path, version):
+    """Copy the database before upgrading it, e.g. wijnkoop-backup-v0.db next to it."""
+    target = path.with_name(f"{path.stem}-backup-v{version}.db")
+    if target.exists():
+        return
+    dest = sqlite3.connect(target)
+    with dest:
+        con.backup(dest)
+    dest.close()
+
+
 def connect(path=None):
     path = path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode = WAL")
-    if con.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+    version = con.execute("PRAGMA user_version").fetchone()[0]
+    if version < SCHEMA_VERSION:
         has_offer = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='offer'").fetchone()
+        if has_offer:
+            _backup(con, path, version)
         con.execute("PRAGMA foreign_keys = OFF")
         con.executescript("DROP VIEW IF EXISTS wine_list;")
         con.execute("BEGIN")

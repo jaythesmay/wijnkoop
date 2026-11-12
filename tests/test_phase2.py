@@ -194,6 +194,7 @@ def test_upgrade_phase1_database(tmp_path):
     make_phase1_db(path)
     con = db.connect(path)
     assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert (tmp_path / "old-backup-v0.db").exists()
     o = con.execute("SELECT * FROM offer").fetchone()
     assert o["id"] == 1 and o["vintage_key"] == "nv" and o["vintage_checked"] == 0
     assert o["effective_price_per_75cl"] == 200.0  # phase 1 promotions are not trusted
