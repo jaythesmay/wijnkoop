@@ -3,8 +3,8 @@
 _koop wijn goedkoop_
 
 A private wine value finder that runs on a QNAP NAS. It reads wine prices from Dutch shops
-(phase 1: Gall & Gall), stores them in one SQLite file and shows them in a filterable web screen
-(Datasette) at `http://<nas-address>:8001`.
+(Gall & Gall so far), combines them with award and critic scores, stores everything in one SQLite
+file and shows it in a filterable web screen (Datasette) at `http://<nas-address>:8001`.
 
 Design: see the "WijnKoop – app design" document.
 
@@ -13,6 +13,13 @@ Design: see the "WijnKoop – app design" document.
 - Waits at least 5 seconds between pages (longer if the shop asks for it).
 - Runs every Monday at 01:00 (change with `WIJNKOOP_RUN_WEEKDAY` / `WIJNKOOP_RUN_HOUR`).
 - Personal, non-commercial use only.
+- Keeps every vintage of a shop page apart: a new vintage on the same page starts a new offer.
+- Logs every change (new wine, price, promotion, stock, vintage, award, gone) in `event`;
+  the "Weekly overview" page shows the last 7 days.
+- Scores: awards and critic points (silver and up) combined with competition weights
+  (`wijnkoop/reference.py`), value against price, and a deal rule based on the 90-day
+  median price for an order of 6 bottles (`wijnkoop/scores.py`).
+- Older databases are upgraded automatically when the container starts.
 
 ## Commands (run inside the container)
 | Command | What it does |
@@ -20,6 +27,7 @@ Design: see the "WijnKoop – app design" document.
 | `python -m wijnkoop check --count 3` | Reads 3 wine pages, prints what it understood, saves the raw pages in `/data/samples` |
 | `python -m wijnkoop collect --limit 20` | Reads the first 20 wines into the database |
 | `python -m wijnkoop collect` | Reads all wines now (takes hours) |
+| `python -m wijnkoop scores` | Recomputes scores, value and deals (also done after every run) |
 
 ## Development
 ```

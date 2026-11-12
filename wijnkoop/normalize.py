@@ -26,4 +26,9 @@ def norm(text: str | None) -> str:
 
 def wine_key(name: str, vintage: int | None, volume_cl: float | None = None) -> str:
     """Key that identifies a wine + vintage across one shop's catalogue."""
-    return f"{norm(name)}|{vintage or 'nv'}"
+    return f"{cuvee_key(name)}|{vintage or 'nv'}"
+
+
+def cuvee_key(name: str) -> str:
+    """Key for a wine regardless of vintage: the normalised name without years."""
+    return re.sub(r"\s+", " ", re.sub(r"\b(19|20)\d{2}\b", " ", norm(name))).strip()

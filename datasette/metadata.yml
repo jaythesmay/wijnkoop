@@ -3,13 +3,57 @@ source: "App version __BUILD_DATE__"
 source_url: "https://github.com/jaythesmay/wijnkoop/commit/__GIT_SHA__"
 description_html: |-
   <p><strong>App version: __BUILD_DATE__</strong> (code __GIT_SHORT__)</p>
-  Your private wine finder. Start with <a href="/wijnkoop/wine_list">the wine list</a>
-  or one of the saved searches below. Phase 1: Gall &amp; Gall prices only; award scores follow in phase 2.
+  <p>Your private wine finder. Good places to start:</p>
+  <ul>
+    <li><a href="/wijnkoop/weekly_overview">Weekly overview</a>: what changed in the last 7 days (read it on Wednesdays)</li>
+    <li><a href="/wijnkoop/best_buys">Best buys</a>: every wine with its score, value and price for 6 bottles</li>
+    <li><a href="/wijnkoop/best_for_budget">Best wine for my budget</a></li>
+    <li><a href="/wijnkoop/deals_with_awards">Deals on award-winning wines</a></li>
+    <li><a href="/wijnkoop/award_list">Awards</a>: click an award on the left to see its own ranking</li>
+    <li><a href="/wijnkoop/consistent_producers">Producers that win every year</a></li>
+    <li><a href="/wijnkoop/wine_list">All wines</a> and the <a href="/wijnkoop/run_log">update log</a></li>
+  </ul>
+  <p><small>Score: awards and critics combined (silver and up count; Decanter, IWC and IWSC weigh most).
+  Value: how much higher the score is than usual for wines at this price. Deal: at least 15% below
+  the usual price, counted for an order of 6 bottles.</small></p>
 databases:
   wijnkoop:
     tables:
+      best_buys:
+        title: Best buys
+        description: >-
+          One line per wine per shop. Score = combined award score (empty when no silver-or-better
+          award is known). Value = score minus what you would expect at this price; above 0 is good value.
+          Prices are per bottle when you buy 6, with the shop's promotion applied.
+        sort_desc: value
+        facets:
+          - colour
+          - country
+          - deal
+          - shop
+          - online_in_stock
+        columns:
+          price_per_bottle_at_6: Price per bottle when you buy 6 of this wine, promotion included
+          price_6_bottles_incl_delivery: Total for 6 bottles including delivery costs
+          normal_price: The shop's normal price for one bottle
+          score: Combined award score on a 100-point scale
+          value: Score above (+) or below (-) what is normal at this price
+          other_vintages_awarded: How many other vintages of this wine won silver or better
+          other_vintages_avg: Average score of those other vintages
+          producer_wines_awarded: How many other wines of this producer won silver or better
+          producer_avg: Average score of those wines
+      award_list:
+        title: Awards
+        description: Every award and critic score linked to a wine. Click an award under the facets to see one competition's own ranking.
+        sort_desc: points
+        facets:
+          - award
+          - kind
+          - medal
+          - year
+          - colour
       wine_list:
-        title: Wine list
+        title: All wines
         description: All wines with their current price per shop. Click a column to sort, use the filters to narrow down.
         sort: price_per_75cl
         facets:
@@ -17,40 +61,102 @@ databases:
           - country
           - shop
           - online_in_stock
+          - gone
         columns:
           price: Price in euro for the bottle as sold
           price_per_75cl: Price converted to a 75 cl bottle
-          awards_count: Number of awards the shop mentions (details follow in phase 2)
+          effective_price_per_75cl: Price per 75 cl when you buy 6, promotion included
+          was_price: Struck-through earlier price shown by the shop
+          awards_count: Number of awards the shop mentions
+          gone: The wine is no longer on the shop's website
+      weekly_events:
+        title: All changes
+        sort_desc: happened_on
+        facets:
+          - kind
+          - shop
       run_log:
         title: Update log
         sort_desc: started
     queries:
+      weekly_overview:
+        title: Weekly overview
+        description: >-
+          What changed in the last 7 days, most interesting first: new awards, deals on wines
+          with a score, price drops, new wines and wines that disappeared.
+        sql: |-
+          SELECT
+            CASE e.kind
+              WHEN 'new_award' THEN '1. New award'
+              WHEN 'promotion_start' THEN '2. New promotion'
+              WHEN 'price_drop' THEN '3. Price drop'
+              WHEN 'new_offer' THEN '4. New in shop'
+              WHEN 'back' THEN '4. Back in shop'
+              WHEN 'back_in_stock' THEN '5. Back in stock'
+              WHEN 'vintage_change' THEN '6. New vintage'
+              WHEN 'price_rise' THEN '7. Price rise'
+              WHEN 'promotion_end' THEN '7. Promotion ended'
+              WHEN 'out_of_stock' THEN '8. Out of stock'
+              WHEN 'gone' THEN '8. Gone from shop'
+              ELSE e.kind END AS what,
+            e.wine, e.vintage, e.shop, e.old_value AS was, e.new_value AS now, e.score,
+            os.price_per_bottle_at_6, os.deal, os.value, e.happened_on, e.url
+          FROM weekly_events e
+          LEFT JOIN best_buys os ON os.url = e.url
+          WHERE e.happened_on >= date('now', 'localtime', '-7 days')
+          ORDER BY what, e.score DESC NULLS LAST, os.value DESC NULLS LAST
+          LIMIT 500
+      best_for_budget:
+        title: Best wine for my budget
+        description: >-
+          Fill in your maximum price per bottle (for an order of 6) and optionally a colour
+          (red, white or rosé), then press Run SQL.
+        sql: |-
+          SELECT wine, vintage, colour, country, shop, price_per_bottle_at_6, promotion, deal,
+                 score, best_award, value, other_vintages_avg, producer_avg, online_in_stock, url
+          FROM best_buys
+          WHERE price_per_bottle_at_6 <= CAST(:max_price AS REAL)
+            AND (:colour = '' OR colour = :colour)
+            AND score IS NOT NULL
+          ORDER BY score DESC, value DESC
+          LIMIT 200
+      deals_with_awards:
+        title: Deals on award-winning wines
+        sql: |-
+          SELECT wine, vintage, colour, country, shop, price_per_bottle_at_6, normal_price, promotion,
+                 deal_reason, score, best_award, value, online_in_stock, url
+          FROM best_buys
+          WHERE deal = 'yes' AND score IS NOT NULL
+          ORDER BY value DESC
+      consistent_producers:
+        title: Producers that win every year
+        description: >-
+          Producers with several wines or vintages that won silver or better. Their other wines are worth a look
+          even without an award of their own.
+        sql: |-
+          SELECT w.producer,
+                 COUNT(DISTINCT ws.wine_id) AS awarded_wines_and_vintages,
+                 ROUND(AVG(ws.overall), 1) AS average_score,
+                 MAX(ws.overall) AS best_score,
+                 (SELECT COUNT(*) FROM best_buys b WHERE b.producer = w.producer) AS wines_for_sale
+          FROM wine_score ws JOIN wine w ON w.id = ws.wine_id
+          WHERE ws.overall IS NOT NULL AND w.producer IS NOT NULL
+          GROUP BY w.producer
+          HAVING COUNT(DISTINCT ws.wine_id) >= 2
+          ORDER BY average_score DESC
       on_promotion:
         title: Wines on promotion now
         sql: |-
-          SELECT wine, vintage, colour, country, price, promotion, awards_count, url
-          FROM wine_list
+          SELECT wine, vintage, colour, country, shop, price_per_bottle_at_6, normal_price, promotion,
+                 deal, score, value, url
+          FROM best_buys
           WHERE promotion IS NOT NULL
-          ORDER BY awards_count DESC, price_per_75cl
-      awarded_by_budget:
-        title: Award-winning wines within a budget
-        description: Fill in your maximum price and press Run SQL.
-        sql: |-
-          SELECT wine, vintage, colour, country, grapes, price, promotion, awards_count, url
-          FROM wine_list
-          WHERE awards_count > 0 AND price_per_75cl <= CAST(:max_price AS REAL)
-          ORDER BY awards_count DESC, price_per_75cl
+          ORDER BY score DESC NULLS LAST, price_per_bottle_at_6
       price_drops:
-        title: Price drops since the previous update
+        title: Price drops in the last 30 days
         sql: |-
-          WITH ranked AS (
-            SELECT offer_id, seen_on, price,
-                   LAG(price) OVER (PARTITION BY offer_id ORDER BY seen_on) AS previous
-            FROM price_history
-          )
-          SELECT o.title AS wine, r.previous AS was, r.price AS now,
-                 ROUND(100.0 * (r.previous - r.price) / r.previous) AS percent_off, r.seen_on, o.url
-          FROM ranked r JOIN offer o ON o.id = r.offer_id
-          WHERE r.previous IS NOT NULL AND r.price < r.previous
-            AND r.seen_on = (SELECT MAX(seen_on) FROM price_history WHERE offer_id = r.offer_id)
+          SELECT e.happened_on, e.wine, e.vintage, e.shop, e.old_value AS was, e.new_value AS now,
+                 ROUND(100.0 * (e.old_value - e.new_value) / e.old_value) AS percent_off, e.score, e.url
+          FROM weekly_events e
+          WHERE e.kind = 'price_drop' AND e.happened_on >= date('now', 'localtime', '-30 days')
           ORDER BY percent_off DESC

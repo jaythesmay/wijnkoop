@@ -37,7 +37,6 @@ def test_parse_product():
 
 def test_save(tmp_path):
     con = db.connect(tmp_path / "t.db")
-    con.execute("INSERT INTO shop (name) VALUES ('Gall & Gall')")
     p = gall.parse_product(URL, (FIX / "gall-product.html").read_text())
     save_product(con, 1, p, "2026-11-11")
     save_product(con, 1, p, "2026-11-11")  # same day twice: no duplicates
