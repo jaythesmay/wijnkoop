@@ -62,7 +62,7 @@ def _wine_scores(con, now):
     per_wine = defaultdict(list)
     info = {}
     for r in rows:
-        s = award_score(r["medal"], r["points"])
+        s = award_score(r["medal"], r["points"], r["short"])
         info[r["wine_id"]] = (r["cuvee_id"], r["producer_key"])
         if s is None:
             continue

@@ -6,6 +6,7 @@ import sys
 import time
 
 from . import config, db, scores
+from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_gall
 from .fetch import PoliteClient
 from .shops import gall
@@ -96,30 +97,42 @@ def run_is_due(con, now: dt.datetime) -> bool:
 
 
 def cmd_scheduler(args):
+    """Forever: the weekly shop run first, award checks in between, then wait 10 minutes."""
     log = logging.getLogger("wijnkoop")
+    announced = None
     while True:
         now = dt.datetime.now()
         con = db.connect()
-        due = run_is_due(con, now)
-        con.close()
-        if due:
-            try:
-                collect_gall()
-                continue
-            except Exception:
-                log.exception("Gall run failed, trying again in 1 hour")
-                time.sleep(3600)
-                continue
-        nxt = _slot(now, 1)
-        log.info("Next Gall run: %s", nxt.strftime("%A %d %B %Y %H:%M"))
-        while dt.datetime.now() < nxt:
-            time.sleep(min(600, max(1, (nxt - dt.datetime.now()).total_seconds())))
-        # Fresh scheduled run: start over instead of resuming.
         try:
-            collect_gall(resume=False)
+            if run_is_due(con, now):
+                collect_gall(con=con)
+                match_awards(con)
+                scores.recompute(con)
+                continue
+            if awards_due(con, now):
+                run_award_import(con)
+                continue
         except Exception:
-            log.exception("Gall run failed, trying again in 1 hour")
+            log.exception("Scheduled job failed, trying again in 1 hour")
             time.sleep(3600)
+            continue
+        finally:
+            con.close()
+        nxt = _slot(now, 1)
+        if announced != nxt:
+            log.info("Next Gall run: %s", nxt.strftime("%A %d %B %Y %H:%M"))
+            announced = nxt
+        time.sleep(600)
+
+
+def cmd_awards(args):
+    con = db.connect()
+    if args.match_only:
+        print(match_awards(con, only_unmatched=False))
+        scores.recompute(con)
+    else:
+        print(run_award_import(con, sources=args.source or ("iwc", "cmb")))
+    con.close()
 
 
 def main(argv=None):
@@ -138,6 +151,10 @@ def main(argv=None):
     p.add_argument("--count", type=int, default=3)
     p.set_defaults(func=cmd_check)
     sub.add_parser("scores", help="recompute scores and deals").set_defaults(func=cmd_scores)
+    p = sub.add_parser("awards", help="read IWC and Concours Mondial results now and link them to wines")
+    p.add_argument("--source", action="append", choices=["iwc", "cmb"])
+    p.add_argument("--match-only", action="store_true", help="only redo the linking to wines")
+    p.set_defaults(func=cmd_awards)
     sub.add_parser("scheduler", help="run the weekly schedule forever").set_defaults(func=cmd_scheduler)
     args = parser.parse_args(argv)
     args.func(args)

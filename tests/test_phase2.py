@@ -96,7 +96,9 @@ def test_award_text():
     assert d["points"] == 92.5
     assert reference.parse_award_text("Lekker bij kaas") is None
     assert reference.award_score("Bronze", None) is None
-    assert reference.award_score("Gold", None) == 93
+    assert reference.award_score("Gold", None) == 92
+    assert reference.award_score("Gold", None, "IWC") == 96
+    assert reference.award_score("Silver", None, "CMB") == 87
     assert reference.award_score("Silver", 90) == 90
 
 

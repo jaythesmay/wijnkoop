@@ -20,6 +20,9 @@ Design: see the "WijnKoop – app design" document.
   (`wijnkoop/reference.py`), value against price, and a deal rule based on the 90-day
   median price for an order of 6 bottles (`wijnkoop/scores.py`).
 - Older databases are upgraded automatically when the container starts.
+- Award results: IWC (with points) and Concours Mondial are read automatically, weekly in
+  the award seasons (March, late May to June, September, late November) and monthly otherwise.
+  Decanter and IWSC are only known from what shops print, because their sites forbid or block robots.
 
 ## Commands (run inside the container)
 | Command | What it does |
@@ -27,6 +30,8 @@ Design: see the "WijnKoop – app design" document.
 | `python -m wijnkoop check --count 3` | Reads 3 wine pages, prints what it understood, saves the raw pages in `/data/samples` |
 | `python -m wijnkoop collect --limit 20` | Reads the first 20 wines into the database |
 | `python -m wijnkoop collect` | Reads all wines now (takes hours) |
+| `python -m wijnkoop awards` | Reads IWC and Concours Mondial results now and links them to the shop wines |
+| `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
 | `python -m wijnkoop scores` | Recomputes scores, value and deals (also done after every run) |
 
 ## Development

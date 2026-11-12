@@ -51,19 +51,29 @@ MEDALS = [
     (r"brons|bronze", "Bronze"),
     (r"commended|eervolle\s+vermelding", "Commended"),
 ]
-# Score on the 100-point scale for a medal without points. Bronze/Commended: no evidence.
-MEDAL_SCORE = {"Trophy": 97, "Platinum": 97, "Grand Gold": 96, "Gold": 93, "Silver": 89}
+# Score on the 100-point scale for a medal without points: the middle of each
+# competition's own points band. Bronze/Commended: no evidence.
+MEDAL_SCORE = {"Trophy": 97, "Platinum": 97, "Grand Gold": 95, "Gold": 92, "Silver": 88}
+MEDAL_SCORE_BY_COMPETITION = {
+    # Gold 95-100, Silver 90-94
+    "IWC": {"Trophy": 97, "Gold": 96, "Silver": 92},
+    "IWSC": {"Trophy": 97, "Gold": 96, "Silver": 92},
+    # Platinum 97-100, Gold 95-96, Silver 90-94
+    "DWWA": {"Trophy": 98, "Platinum": 97.5, "Gold": 95.5, "Silver": 92},
+    # OIV scale: Grand Gold 92+, Gold 85-91.9, Silver 82-84.9 (OIV points run lower)
+    "CMB": {"Trophy": 95, "Grand Gold": 94, "Gold": 90, "Silver": 87},
+    # Grand Gold 95+, Gold 90-94.9, Silver 85-89.9
+    "Mundus Vini": {"Grand Gold": 96, "Gold": 92, "Silver": 87.5},
+}
 
 POINTS_RE = re.compile(r"(\d{2,3}(?:[.,]\d)?)\s*(?:/\s*100|punten|points|pts|ptn|p\b|pt\b)")
 POINTS20_RE = re.compile(r"(\d{1,2}(?:[.,]\d)?)\s*/\s*20")
 YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
 
-# Delivery costs per shop. Gall: free from EUR 55 and a minimum order of EUR 20 are
-# printed on every product page; the cost below the free limit is a placeholder.
+# Delivery costs per shop.
 SHOPS = [
     ("Gall & Gall", "https://www.gall.nl", 4.95, 55.0, 20.0,
-     "Free from EUR 55 and minimum order EUR 20 are read from gall.nl; "
-     "the EUR 4.95 below EUR 55 is an estimate."),
+     "EUR 4.95 for orders of EUR 20 to 55, free from EUR 55 (confirmed by Loes, Nov 2026)."),
 ]
 
 
@@ -116,13 +126,13 @@ def parse_award_text(source: str, result: str = "") -> dict | None:
     }
 
 
-def award_score(medal: str | None, points: float | None) -> float | None:
+def award_score(medal: str | None, points: float | None, competition: str | None = None) -> float | None:
     """Score on the 100-point scale, or None when the award is no evidence of quality."""
     if medal in ("Bronze", "Commended"):
         return None
     if points is not None:
         return points
-    return MEDAL_SCORE.get(medal)
+    return MEDAL_SCORE_BY_COMPETITION.get(competition, {}).get(medal, MEDAL_SCORE.get(medal))
 
 
 def competition_id(con, comp) -> int:
