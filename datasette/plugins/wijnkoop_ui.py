@@ -14,6 +14,7 @@ from markupsafe import Markup
 from wijnkoop import jobs, ui
 from wijnkoop.bottles import bottle_size
 from wijnkoop.awards import upload as award_upload
+from wijnkoop.db import BUSY_TIMEOUT
 
 DB = "wijnkoop"
 
@@ -110,6 +111,9 @@ async def upload(datasette, request):
             report = await _write(datasette, award_upload.import_upload, filename, data, competition,
                                   int(year) if year.isdigit() else None)
         except Exception as e:  # unreadable file: say so on the page instead of a crash
+            if _busy(e):
+                return Response.json({"error": "WijnKoop is busy saving a shop run. Nothing was loaded; "
+                                               "try again in a few minutes."}, status=503)
             return Response.json({"error": str(e) or e.__class__.__name__}, status=400)
         return Response.json({"id": report["upload"]["id"], "awards": report["upload"]["awards"]})
     done = await _read(datasette, award_upload.uploads)
@@ -211,6 +215,18 @@ async def update(datasette, request):
     said = {k: [names.get(x, x) for x in (request.args.get(k) or "").split(",") if x]
             for k in ("started", "busy", "skipped")}
     return await _page(datasette, request, "wk_update.html", "Read shops now", said=said, **status)
+
+
+@hookimpl
+def prepare_connection(conn, database):
+    """Wait for a shop run that is saving (its scores take a while) instead of failing with
+    "database is locked" after Datasette's usual 5 seconds."""
+    if database == DB:
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT * 1000}")
+
+
+def _busy(e: Exception) -> bool:
+    return "locked" in str(e) or "busy" in str(e)
 
 
 @hookimpl

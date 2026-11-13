@@ -53,11 +53,12 @@ document.getElementById("upload").addEventListener("submit", async (ev) => {
   const q = new URLSearchParams({filename: file.name, competition: document.getElementById("competition").value,
                                  year: document.getElementById("year").value});
   go.disabled = true;
-  status.textContent = "Reading " + file.name + " and linking wines. A large file can take a minute…";
+  status.textContent = "Reading " + file.name + " and linking wines. A large file, or a shop run that is saving, can make this take a few minutes…";
   try {
     const r = await fetch("/upload?" + q, {method: "POST", body: file, credentials: "same-origin",
                                            headers: {"x-csrftoken": "{{ csrftoken() }}", "content-type": "application/octet-stream"}});
     const d = await r.json();
+    if (r.status === 503) { status.textContent = d.error; go.disabled = false; return; }
     if (!r.ok) throw new Error(d.error || r.status);
     location.href = "/upload/" + d.id;
   } catch (e) {
