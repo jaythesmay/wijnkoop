@@ -86,6 +86,10 @@ SHOPS = [
      "Free delivery from EUR 50 (wijnvoordeel.nl, Nov 2026); sold per box of 6."),
     ("Wijnbeurs", "https://www.wijnbeurs.nl", None, None, None,
      "Delivery cost not on the product pages; sold per box of 6."),
+    ("Grand Cru Wijnen", "https://www.grandcruwijnen.nl", None, None, None,
+     "Delivery cost not on the product pages (grandcruwijnen.nl, Nov 2026)."),
+    ("Grape District", "https://www.grapedistrict.nl", None, 75.0, None,
+     "Free delivery from EUR 75 (grapedistrict.nl, Nov 2026)."),
 ]
 
 

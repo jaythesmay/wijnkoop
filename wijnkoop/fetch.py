@@ -32,6 +32,13 @@ class PoliteClient:
         return self.robots.can_fetch(USER_AGENT, url)
 
     def get(self, url: str, retries: int = 3) -> str:
+        return self._fetch(url, retries).text
+
+    def get_bytes(self, url: str, retries: int = 3) -> bytes:
+        """For compressed sitemaps (.xml.gz)."""
+        return self._fetch(url, retries).content
+
+    def _fetch(self, url: str, retries: int = 3):
         if not self.allowed(url):
             raise NotAllowed(url)
         for attempt in range(retries):
@@ -52,7 +59,7 @@ class PoliteClient:
                 time.sleep(60 * (attempt + 1))
                 continue
             resp.raise_for_status()
-            return resp.text
+            return resp
         raise RuntimeError(f"Gave up on {url}")
 
     @staticmethod
