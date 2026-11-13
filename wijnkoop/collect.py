@@ -7,6 +7,7 @@ from .fetch import NotAllowed, PoliteClient
 from .bottles import fix_volume
 from .deals import effective_per_75cl, parse_deal
 from .normalize import cuvee_key, norm, wine_key
+from .process import process_token
 from .reference import competition_id, parse_award_text
 from .shops import gall
 
@@ -275,11 +276,13 @@ def _open_run(con, job: str, resume: bool):
         ).fetchone()
         if row:
             log.info("%s: resuming the run that started %s", job, row["started"])
+            con.execute("UPDATE run_log SET process=? WHERE id=?", (process_token(), row["id"]))
             return row["id"], row["started"][:10], row["pages_ok"] or 0, row["pages_failed"] or 0
     # Older unfinished runs will never be resumed: mark them.
     con.execute("UPDATE run_log SET note='interrupted' WHERE job=? AND finished IS NULL", (job,))
     started = dt.datetime.now().isoformat(timespec="seconds")
-    run_id = con.execute("INSERT INTO run_log (job, started) VALUES (?, ?)", (job, started)).lastrowid
+    run_id = con.execute("INSERT INTO run_log (job, started, process) VALUES (?, ?, ?)",
+                         (job, started, process_token())).lastrowid
     return run_id, None, 0, 0
 
 
@@ -294,14 +297,26 @@ def make_client(shop):
 
 def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
     """Read every wine page of one shop (a module from wijnkoop.shops) into the database."""
-    from .awards.importer import Matcher
-
     con = con or db.connect()
     name = shop.SHOP_NAME
     con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES (?, ?)", (name, shop.BASE))
     shop_id = con.execute("SELECT id FROM shop WHERE name=?", (name,)).fetchone()["id"]
     run_id, skip_since, ok, failed = _open_run(con, shop.KEY, resume and not limit)
     con.commit()
+    try:
+        return _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, client)
+    except BaseException:
+        # Not running any more: the run stays unfinished, so the next one carries on from here.
+        con.rollback()
+        con.execute("UPDATE run_log SET process=NULL WHERE id=?", (run_id,))
+        con.commit()
+        raise
+
+
+def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, client) -> dict:
+    from .awards.importer import Matcher
+
+    name = shop.SHOP_NAME
 
     own_client = client is None
     client = client or make_client(shop)
@@ -359,7 +374,7 @@ def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, 
         n = mark_gone(con, shop_id, all_ids, today)
         log.info("%s: %d wines are no longer on the site", name, n)
     con.execute(
-        "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=? WHERE id=?",
+        "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=?, process=NULL WHERE id=?",
         (dt.datetime.now().isoformat(timespec="seconds"), ok, failed, f"{total} of {total} pages read", run_id),
     )
     con.commit()

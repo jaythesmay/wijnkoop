@@ -229,6 +229,15 @@ CREATE TABLE IF NOT EXISTS run_log (
     finished TEXT,
     pages_ok INTEGER DEFAULT 0,
     pages_failed INTEGER DEFAULT 0,
+    note TEXT,
+    process TEXT
+);
+CREATE TABLE IF NOT EXISTS app_job (
+    id INTEGER PRIMARY KEY,
+    shops TEXT NOT NULL,
+    requested TEXT NOT NULL,
+    process TEXT,
+    finished TEXT,
     note TEXT
 );
 """
@@ -448,6 +457,7 @@ def _backup(con, path, version):
 
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
+    "run_log": [("process", "TEXT")],
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
                     ("price_as_93", "REAL"), ("market_rank", "REAL"), ("best_for_price", "INTEGER DEFAULT 0")],

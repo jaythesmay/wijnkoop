@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 
-from . import config, db, scores
+from . import config, db, jobs, scores
 from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_shop, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
@@ -26,8 +26,28 @@ def cmd_scores(args):
 
 
 def cmd_collect(args):
-    for key in args.shop or list(SHOPS):
-        collect_shop(SHOPS[key], limit=args.limit)
+    con = db.connect()
+    if args.job:  # a run started with the button in the app
+        jobs.run_job(con, args.job, collect_shop)
+        return
+    keys = [k for part in (args.shop or []) for k in part.split(",") if k]
+    unknown = [k for k in keys if k not in SHOPS]
+    if unknown:
+        raise SystemExit(f"Unknown shop: {', '.join(unknown)}. Shops: {', '.join(SHOPS)}")
+    status = {s["key"]: s for s in jobs.shop_status(con)["shops"]}
+    if args.new:
+        keys = [k for k, s in status.items() if not s["last"]]
+    elif args.due:
+        keys = [k for k, s in status.items() if s["state"] == "useful"]
+    keys = keys or ([] if args.new or args.due else list(SHOPS))
+    for key in keys:
+        if status[key]["state"] in ("running", "queued"):
+            print(f"{status[key]['name']}: already being read, skipped")
+            continue
+        collect_shop(SHOPS[key], limit=args.limit, con=con)
+    if not keys:
+        print("Nothing to read: every shop was read recently.")
+    con.close()
 
 
 def cmd_check(args):
@@ -104,7 +124,8 @@ def cmd_scheduler(args):
         now = dt.datetime.now()
         con = db.connect()
         try:
-            due = [key for key in SHOPS if run_is_due(con, now, key)]
+            busy = jobs.running_shops(con)  # a run started from the app
+            due = [key for key in SHOPS if run_is_due(con, now, key) and key not in busy]
             if due:
                 collect_shop(SHOPS[due[0]], con=con)
                 match_awards(con)
@@ -257,8 +278,12 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="create the database").set_defaults(func=cmd_init)
     p = sub.add_parser("collect", help="read all wines of every shop (or one shop) now")
-    p.add_argument("--shop", action="append", choices=list(SHOPS), help="only this shop (can be repeated)")
+    p.add_argument("--shop", action="append",
+                   help="only these shops, separated by commas: --shop vindict,vinocom (" + ", ".join(SHOPS) + ")")
+    p.add_argument("--new", action="store_true", help="only the shops never read before")
+    p.add_argument("--due", action="store_true", help="only the shops not read in the last two days")
     p.add_argument("--limit", type=int, default=None, help="only the first N wines (for testing)")
+    p.add_argument("--job", type=int, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_collect)
     p = sub.add_parser("check", help="test a few pages and show what was read")
     p.add_argument("--count", type=int, default=3)

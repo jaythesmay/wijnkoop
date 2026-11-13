@@ -15,6 +15,7 @@ Made for a phone, in the shop as well as at home:
 | Page | What it is for |
 | --- | --- |
 | `/` Home | Gold-or-better wines with the best price for their score, deals on award winners, quick finds |
+| `/update` | Read shops now: when each shop was last read, a button per shop and one for every shop that needs it, the runs going on, and a stop button |
 | `/find` | Filters: price per bottle (per 75 cl), colour, country, grape, minimum score, gold or better, deals |
 | `/search?q=` | Forgiving search on wine, producer and grape (spelling does not need to be exact) |
 | `/wine/<id>` | One wine: score, awards, shops, price history, other vintages, better value nearby |
@@ -91,6 +92,9 @@ and open `http://<nas tailscale name>:8001`.
 | `python -m wijnkoop collect --limit 20` | Reads the first 20 wines into the database |
 | `python -m wijnkoop collect` | Reads all wines of every shop now (takes hours) |
 | `python -m wijnkoop collect --shop vindict` | Reads one shop now (`gall`, `vindict`, `henribloem`, `okhuysen`, `wijnvoordeel`, `wijnbeurs`, `grandcru`, `grapedistrict` or `vinocom`) |
+| `python -m wijnkoop collect --shop vindict,vinocom` | Reads these shops, one after the other |
+| `python -m wijnkoop collect --new` | Reads the shops never read before |
+| `python -m wijnkoop collect --due` | Reads the shops not read in the last two days |
 | `python -m wijnkoop check --shop vindict --count 3` | Reads 3 pages of one shop and prints what it understood |
 | `python -m wijnkoop awards` | Reads IWC and Concours Mondial results now and links them to the shop wines |
 | `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
