@@ -85,10 +85,17 @@ def colour_for(title: str, grapes: str | None) -> str | None:
     return None
 
 
+MEDAL_WORD = re.compile(r"goud|gold|zilver|silver|brons|bronze|platin|trophy|trofee|medal|medaille", re.I)
+
+
 def medal_from_image(src: str) -> str | None:
     """'concours-international-lyon-goud-1-7_33.png' -> 'concours international lyon goud'."""
     name = unquote(src.rsplit("/", 1)[-1]).split("?")[0]
     name = re.sub(r"\.(png|jpe?g|webp|svg|gif)$", "", name, flags=re.I)
+    # A score without a medal: 'luca-maroni-97-20_21' -> 'luca maroni 97 punten'
+    m = re.match(r"^(.*?[a-z])[-_](\d{2,3})((?:[-_]\d+)*)$", name, re.I)
+    if m and 80 <= int(m.group(2)) <= 100 and not MEDAL_WORD.search(m.group(1)):
+        name = f"{m.group(1)}-{m.group(2)}-punten"
     name = re.sub(r"(?:[-_]\d+)+$", "", name)  # file numbers at the end
     words = re.sub(r"[-_]+", " ", name).strip()
     return words or None

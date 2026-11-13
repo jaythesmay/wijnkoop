@@ -205,3 +205,27 @@ def test_other_colour_is_not_linked_and_old_links_are_undone(tmp_path):
     assert con.execute(
         """SELECT w.name, w.vintage FROM award_match m JOIN wine w ON w.id = m.wine_id
            WHERE m.award_id=?""", (branco,)).fetchone()[:] == ("Casa da Passarella A Descoberta Branco", 2025)
+
+
+def test_another_producer_or_an_age_is_another_wine(tmp_path):
+    """Adega de Palmela's 10 Anos is not Adega de Pegões' plain Moscatel de Setúbal (wine 4834)."""
+    c = importer.conflict
+    assert c("Moscatel de Setúbal 10 Anos", None, "Adega de Pegões Moscatel de Setúbal", "white")
+    assert c("Taylor's 10 Year Old Tawny", None, "Taylor's Tawny Port", "red")
+    assert not importer.same_producer("Adega de Palmela", "Adega de Pegões Moscatel de Setúbal", None)
+    assert importer.same_producer("Adega de Pegões", "Adega de Pegões Moscatel de Setúbal", None)
+
+    con = db.connect(tmp_path / "t.db")
+    shop_wine(con, 1, "Adega de Pegões Moscatel de Setúbal", None, colour="white", vintage=2021)
+    add_award(con, "Adega de Palmela", "Moscatel de Setúbal", 2021, points=94, colour="white")
+    add_award(con, "Adega de Pegões", "Moscatel de Setúbal", 2021, points=90, colour="white")
+    importer.match_awards(con, today=dt.date(2026, 11, 12))
+    assert [r[0] for r in con.execute(
+        "SELECT a.producer_raw FROM award_match m JOIN award a ON a.id = m.award_id")] == ["Adega de Pegões"]
+
+    # A link made by the older rules is undone
+    palmela = con.execute("SELECT id FROM award WHERE producer_raw='Adega de Palmela'").fetchone()[0]
+    wine = con.execute("SELECT id FROM wine LIMIT 1").fetchone()[0]
+    con.execute("INSERT INTO award_match (award_id, wine_id, match_score, confirmed) VALUES (?,?,1,1)",
+                (palmela, wine))
+    assert palmela in importer.unlink_conflicts(con)
