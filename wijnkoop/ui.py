@@ -317,14 +317,14 @@ def wine(conn, wine_id: int) -> dict | None:
 
 def order(conn) -> dict:
     lines = _rows(conn, """SELECT i.offer_id, i.qty, b.wine_id, b.wine, b.vintage, b.colour, b.score, b.verdict,
-                                  b.promotion, b.url, b.online_in_stock, o.price, s.id AS shop_id, s.name AS shop,
+                                  b.promotion, b.url, b.online_in_stock, o.price, o.member_price, s.id AS shop_id, s.name AS shop,
                                   s.website, s.delivery_cost, s.free_delivery_from, s.min_order
                            FROM order_item i JOIN offer o ON o.id = i.offer_id JOIN shop s ON s.id = o.shop_id
                            LEFT JOIN best_buys b ON b.offer_id = i.offer_id
                            ORDER BY s.name, i.added""")
     shops = defaultdict(lambda: {"lines": []})
     for ln in lines:
-        ln["cost"] = line_cost(ln["promotion"], ln["price"] or 0, ln["qty"])
+        ln["cost"] = line_cost(ln["promotion"], ln["price"] or 0, ln["qty"], ln["member_price"])
         ln["normal"] = round((ln["price"] or 0) * ln["qty"], 2)
         deal = parse_deal(ln["promotion"], ln["price"])
         # e.g. "6 halen 5 betalen" with 2 bottles: tell her how many make the promotion count

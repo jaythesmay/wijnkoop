@@ -198,9 +198,32 @@ def _reference_price(history: list[tuple[str, float]], normal: float | None, tod
     return normal, "normal price"
 
 
+def refresh_effective_prices(con) -> int:
+    """Apply the current deal rules (and the Premium price) to every current offer, so a change
+    in those rules counts without reading all shops again. Returns the number of offers changed."""
+    from .deals import effective_per_75cl, parse_deal
+
+    changed = 0
+    for r in con.execute("""SELECT id, price, volume_cl, promotion, member_price, effective_price_per_75cl
+                            FROM offer WHERE is_current = 1""").fetchall():
+        eff = effective_per_75cl(r["price"], r["volume_cl"], r["promotion"], r["member_price"])
+        if eff is None or eff == r["effective_price_per_75cl"]:
+            continue
+        deal = parse_deal(r["promotion"], r["price"])
+        con.execute("""UPDATE offer SET effective_price_per_75cl=?, deal_type=?, deal_min_qty=?, deal_factor=?
+                       WHERE id=?""", (eff, deal.kind if deal else None, deal.min_qty if deal else None,
+                                       deal.factor if deal else None, r["id"]))
+        con.execute("""UPDATE price_history SET effective_price_per_75cl=? WHERE offer_id=?
+                       AND seen_on = (SELECT MAX(seen_on) FROM price_history WHERE offer_id=?)""",
+                    (eff, r["id"], r["id"]))
+        changed += 1
+    return changed
+
+
 def recompute(con, today: dt.date | None = None):
     today = today or dt.date.today()
     now = dt.datetime.now().isoformat(timespec="seconds")
+    refresh_effective_prices(con)
     wine_overall = _wine_scores(con, now)
 
     offers = con.execute(
