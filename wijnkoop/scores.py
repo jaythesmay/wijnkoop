@@ -336,20 +336,25 @@ def recompute(con, today: dt.date | None = None):
 
 def reparse_shop_awards(con) -> int:
     """Read the stored text of every award a shop printed again with the current rules, so a
-    fix in reading them (such as "96-100 punten" being 96, not 100) also corrects old ones."""
+    fix in reading them (such as "96-100 punten" being 96, not 100, or a competition that was not
+    recognised) also corrects old ones."""
     import sqlite3
 
-    from .reference import parse_award_text
+    from .reference import competition_id, parse_award_text
 
     changed = 0
-    for r in con.execute("""SELECT id, raw_text, medal, points, year FROM award
+    for r in con.execute("""SELECT id, raw_text, medal, points, year, competition_id FROM award
                             WHERE source = 'shop page' AND raw_text IS NOT NULL""").fetchall():
         parsed = parse_award_text(r["raw_text"])
-        if not parsed or (parsed["medal"], parsed["points"], parsed["year"]) == (r["medal"], r["points"], r["year"]):
+        if not parsed:
+            continue
+        comp_id = competition_id(con, parsed["competition"])  # e.g. "gilbert gaillard" without "&"
+        if (parsed["medal"], parsed["points"], parsed["year"], comp_id) == (
+                r["medal"], r["points"], r["year"], r["competition_id"]):
             continue
         try:
-            con.execute("UPDATE award SET medal=?, points=?, year=? WHERE id=?",
-                        (parsed["medal"], parsed["points"], parsed["year"], r["id"]))
+            con.execute("UPDATE award SET medal=?, points=?, year=?, competition_id=? WHERE id=?",
+                        (parsed["medal"], parsed["points"], parsed["year"], comp_id, r["id"]))
         except sqlite3.IntegrityError:  # the corrected award is already stored: drop this copy
             con.execute("DELETE FROM award_match WHERE award_id=?", (r["id"],))
             con.execute("DELETE FROM award WHERE id=?", (r["id"],))

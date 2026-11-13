@@ -23,7 +23,7 @@ COMPETITIONS = [
     ("CMB", "Concours Mondial de Bruxelles", "competition", 0.7, r"concours\s+mondial|\bcmb\b"),
     ("Mundus Vini", "Mundus Vini", "competition", 0.7, r"mundus\s+vini"),
     ("Berliner Wein Trophy", "Berliner Wein Trophy", "competition", 0.4, r"berliner\s+wein(\s+troph(y|ies))?"),
-    ("Gilbert & Gaillard", "Gilbert & Gaillard", "competition", 0.4, r"gilbert\s*(&|et|and)\s*gaillard"),
+    ("Gilbert & Gaillard", "Gilbert & Gaillard", "competition", 0.4, r"gilbert\s*(&|et|and|en)?\s*gaillard"),
     ("Concours Général Agricole", "Concours Général Agricole Paris", "competition", 0.4,
      r"concours\s+general\s+agricole|concours\s+agricole"),
     ("Sakura", "Sakura Japan Women's Wine Awards", "competition", 0.4, r"sakura"),
@@ -43,18 +43,24 @@ COMPETITIONS = [
     ("Perswijn", "Perswijn", "critic", 0.4, r"perswijn"),
     ("Hamersma", "De Grote Hamersma", "critic", 0.4, r"hamersma"),
     ("Onno Kleyn", "Onno Kleyn", "critic", 0.4, r"onno\s+kleyn"),
+    # Shown on the wine page but not counted (NOT_COUNTED): a shop's own tasting panel, and a
+    # rater whose scores appear almost only on that shop's wines (97-99 for EUR 7-9 wines).
+    ("Italian Wine Guy", "Italian Wine Guy", "critic", 0.4, r"italian\s+wine\s+guy"),
+    ("Proefpanel", "Wijnvoordeel / Wijnbeurs proefpanel", "critic", 0.4, r"proefpanel"),
 ]
+NOT_COUNTED = {"Italian Wine Guy", "Proefpanel"}
 OTHER_COMPETITION = ("Other", "Other competition or critic", "competition", 0.4)
 
 # Medal words (Dutch, English, French) -> standard medal
 MEDALS = [
     (r"grand\s+gold|grande?\s+medaille\s+d.or|dubbel\s+goud|double\s+gold", "Grand Gold"),
     (r"platin[au]m?|platina", "Platinum"),
-    (r"best\s+in\s+show|trophy|trofee", "Trophy"),
     (r"goud|gold|medaille\s+d.or", "Gold"),
     (r"zilver|silver|argent", "Silver"),
     (r"brons|bronze", "Bronze"),
     (r"commended|eervolle\s+vermelding", "Commended"),
+    # Last: "Trophy" is often part of a competition's name ("Asia Wine Trophy goud" is a gold)
+    (r"best\s+in\s+show|trophy|trofee", "Trophy"),
 ]
 # Score on the 100-point scale for a medal without points: the middle of each competition's own
 # points band, from its published rules (Nov 2026). The same word means very different things:
@@ -72,6 +78,8 @@ MEDAL_SCORE_BY_COMPETITION = {
     "Berliner Wein Trophy": {"Grand Gold": 94, "Gold": 88, "Silver": 83},
     # Double Gold 90+, Gold 85-89, Silver 83-84
     "Gilbert & Gaillard": {"Grand Gold": 92, "Gold": 87, "Silver": 83.5},
+    # De Grote Hamersma's medal circles: bronze 7-7.5, silver 8-8.5, gold 9+ out of 10
+    "Hamersma": {"Gold": 92, "Silver": 89, "Bronze": 86},
 }
 # Any other competition: most small ones judge on the OIV scale (Grand Gold 92+, Gold 85-91,
 # Silver 82-84, Bronze 80-81). A commended without a known band is no evidence.
@@ -231,6 +239,8 @@ def parse_award_text(source: str, result: str = "") -> dict | None:
 
 def award_score(medal: str | None, points: float | None, competition: str | None = None) -> float | None:
     """Score on the 100-point scale, or None when the award is no evidence of quality."""
+    if competition in NOT_COUNTED:
+        return None
     if points is not None:
         score = points + CRITIC_OFFSET.get(competition, 0)
     else:

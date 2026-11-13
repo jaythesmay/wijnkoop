@@ -33,6 +33,7 @@ vinhos vins vini family famille group company cellars cellar weingut domaine dom
 societa sociedade agro pecuaria cooperative cooperativa vignerons producteurs
 chateau chateaux castello castillo quinta tenuta tenute cave caves grand saint sainte sant santa san
 vina vinas vinedos vigna vigneti finca hacienda
+adega adegas kellerei winzergenossenschaft winzer produttori vignaioli coop
 """.split())
 # Colour words say nothing about which wine it is once the colours agree.
 COLOUR_WORDS = set("""
@@ -96,7 +97,23 @@ def conflict(award_name: str, award_colour: str | None, wine_name: str, wine_col
     for group in la.keys() & lw.keys():
         if la[group] != lw[group]:
             return f"{group}: {la[group]} award, {lw[group]} wine"
+    # "Moscatel de Setubal 10 Anos" is another wine than the plain Moscatel de Setubal
+    if ("age" in la) != ("age" in lw):
+        return f"age: {la.get('age', 'none')} award, {lw.get('age', 'none')} wine"
     return None
+
+
+def first_words(name: str | None, n: int = 2) -> set[str]:
+    """The first meaningful words of a wine's name, which name its producer when the shop gives none
+    ("Adega de Pegoes Moscatel" -> pegoes, moscatel; "Adega" and "de" say nothing)."""
+    return set([w for w in cuvee_key(name or "").split() if w not in STOP and not w.isdigit()][:n])
+
+
+def same_producer(award_producer: str | None, wine_name: str, wine_producer: str | None) -> bool:
+    """The award's producer names the shop wine's producer (or, when the shop gives no producer,
+    the first words of the wine's name)."""
+    pw = _words(wine_producer)
+    return bool(_words(award_producer) & (pw or first_words(wine_name)))
 
 
 def _words(text: str | None) -> set[str]:
@@ -134,7 +151,7 @@ class Matcher:
             pw = _words(r["producer"])
             nw = set(cuvee_key(r["name"]).split()) - COLOUR_WORDS
             self.cuvees[r["id"]] = (r["name"], pw, nw, r["colour"])
-            for w in pw or (set(cuvee_key(r["name"]).split()[:2]) - STOP):
+            for w in pw or first_words(r["name"]):
                 self.by_word[w].add(r["id"])
 
     def best(self, rec: dict):
@@ -153,8 +170,7 @@ class Matcher:
                 continue
             # The award's producer must name the shop wine's producer (or, when the shop
             # gives no producer, the first words of the wine's name).
-            first = set(cuvee_key(name).split()[:2]) - STOP
-            if not pa & (pw or first):
+            if not pa & (pw or first_words(name)):
                 continue
             left = " ".join(sorted(na - pa - pw))
             right = " ".join(sorted(nw - pa - pw))
@@ -184,7 +200,7 @@ class Matcher:
 
 
 def unlink_conflicts(con) -> list[int]:
-    """Undo links between an award and a wine of another colour, tier, sweetness or age, made
+    """Undo links between an award and a wine of another producer, colour, tier, sweetness or age, made
     before the matching checked these. The awards are linked again with the current rules, and
     a vintage that existed only because of such a link is removed. Returns the award ids."""
     rows = con.execute(
@@ -196,6 +212,8 @@ def unlink_conflicts(con) -> list[int]:
     for r in rows:
         why = conflict(r["name_raw"], r["award_colour"], r["name"], r["colour"],
                        _words(r["producer_raw"]) | _words(r["producer"]))
+        if not why and r["producer_raw"] and not same_producer(r["producer_raw"], r["name"], r["producer"]):
+            why = f"producer: {r['producer_raw']} award, {r['producer'] or r['name']} wine"
         if why:
             log.info("Award %s is not for wine %s (%s): link undone", r["award_id"], r["wine_id"], why)
             con.execute("DELETE FROM award_match WHERE award_id=? AND wine_id=?", (r["award_id"], r["wine_id"]))

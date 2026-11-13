@@ -314,3 +314,36 @@ def test_recompute_applies_new_rules_and_premium(tmp_path):
     assert [tuple(r) for r in con.execute("SELECT effective_price_per_75cl, deal_type FROM offer ORDER BY id")] == [
         (7.5, "nth_bottle"), (8.0, None)]
     assert [r[0] for r in con.execute("SELECT bottle_price_at_6 FROM offer_score ORDER BY offer_id")] == [7.5, 8.0]
+
+
+def test_shop_panels_and_unknown_raters():
+    """Wijnvoordeel's medal images: a critic's score in the file name, its own tasting panel, and a
+    rater whose scores appear almost only on its wines (shown, not counted)."""
+    from wijnkoop.shops.wijnvoordeel import medal_from_image
+
+    def counts(src):
+        a = reference.parse_award_text(medal_from_image(src))
+        return a["competition"][0], reference.award_score(a["medal"], a["points"], a["competition"][0])
+
+    assert counts("https://x/l/u/luca-maroni-97-20_21.png") == ("Luca Maroni", 91)
+    assert counts("https://x/p/r/proefpanelpunten-rood-wbnl-90_337.png") == ("Proefpanel", None)
+    assert counts("https://x/i/t/italian-wine-guy-99-punten-6_27.png") == ("Italian Wine Guy", None)
+    assert counts("https://x/g/i/gilbert-gaillard-double-gold-3_1.png") == ("Gilbert & Gaillard", 92)
+    assert counts("https://x/a/s/asia-wine-trophy-goud-34_142.png") == ("Other", 88)  # a gold, not a trophy
+    assert counts("https://x/h/a/hamersma-med-cirkel-zilver-8-nl_33.png") == ("Hamersma", 89)
+    assert reference.parse_award_text("Gilbert en Gaillard Goud")["competition"][0] == "Gilbert & Gaillard"
+
+
+def test_reparse_fixes_the_competition(tmp_path):
+    """An award stored under "Other" before its competition was recognised is moved to it."""
+    from wijnkoop import scores
+
+    con = db.connect(tmp_path / "t.db")
+    reference.seed(con)
+    other = reference.competition_id(con, reference.OTHER_COMPETITION)
+    con.execute("""INSERT INTO award (competition_id, medal, source, source_url, raw_text, name_raw, found_on)
+                   VALUES (?, 'Grand Gold', 'shop page', 'https://x', 'gilbert gaillard double gold', 'X', '2026-11-13')""",
+                (other,))
+    assert scores.reparse_shop_awards(con) == 1
+    assert con.execute("SELECT c.short FROM award a JOIN competition c ON c.id = a.competition_id").fetchone()[0] == \
+        "Gilbert & Gaillard"
