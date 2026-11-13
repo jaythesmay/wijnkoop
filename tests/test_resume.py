@@ -63,3 +63,36 @@ def test_run_is_due(tmp_path, monkeypatch):
     assert cli.run_is_due(con, thursday) is False  # done for this week
     # NAS was off on Monday 01:00; it boots Monday 07:00: catch up.
     assert cli.run_is_due(con, dt.datetime(2026, 11, 16, 7, 0)) is True
+
+
+def test_other_runs_can_write_between_pages(tmp_path):
+    """A run commits every page, so a second run (or the web pages) can write while it fetches."""
+    import sqlite3
+
+    path = tmp_path / "t.db"
+    con = db.connect(path)
+    other = sqlite3.connect(path, timeout=0.1)
+
+    class Watching(FakeClient):
+        def get(self, url):
+            if "sitemap" not in url:
+                other.execute("INSERT INTO watch (wine_id) VALUES (?)", (len(self.pages) + 100,))
+                other.commit()  # would fail with "database is locked" while the run holds it
+            return super().get(url)
+
+    client = Watching()
+    collect_gall(con=con, client=client)
+    assert len(client.pages) == 3
+    assert con.execute("SELECT COUNT(*) FROM watch").fetchone()[0] == 3
+    assert con.execute("SELECT pages_ok, pages_failed FROM run_log").fetchone()[:] == (3, 0)
+
+
+def test_page_saved_before_an_interruption_is_kept(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    try:
+        collect_gall(con=con, client=FakeClient(fail_after=2))
+    except KeyboardInterrupt:
+        pass
+    con.close()  # the NAS stops: nothing is committed after this
+    con = db.connect(tmp_path / "t.db")
+    assert con.execute("SELECT COUNT(*) FROM offer").fetchone()[0] == 2

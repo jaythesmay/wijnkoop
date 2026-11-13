@@ -336,10 +336,14 @@ def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, 
                             (shop_id, pid, today))
             else:
                 save_product(con, shop_id, product, today, matcher)
+            # Commit every page, so the database is never held while the next page is fetched
+            # and another run can write in between.
+            con.commit()
             ok += 1
         except NotAllowed:
             log.warning("robots.txt does not allow %s, skipped", url)
         except Exception as exc:  # keep going; one bad page must not stop the run
+            con.rollback()  # nothing half-saved from this page
             failed += 1
             log.warning("Failed %s: %s", url, exc)
         if i % 25 == 0:

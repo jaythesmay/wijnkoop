@@ -462,10 +462,15 @@ def _add_later_columns(con):
     con.commit()
 
 
+BUSY_TIMEOUT = 120  # seconds
+
+
 def connect(path=None):
     path = path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(path)
+    # Two jobs may write at the same time (a run per shop, the web pages): wait for the other one
+    # instead of failing with "database is locked".
+    con = sqlite3.connect(path, timeout=BUSY_TIMEOUT)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode = WAL")
     version = con.execute("PRAGMA user_version").fetchone()[0]
