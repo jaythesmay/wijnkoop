@@ -5,6 +5,7 @@ a web server. The Datasette plugin in datasette/plugins/ calls these.
 """
 import datetime as dt
 import math
+import re
 import sqlite3
 from collections import defaultdict
 
@@ -274,12 +275,17 @@ def wine(conn, wine_id: int) -> dict | None:
     w = w[0]
     offers = _decorate(conn, _rows(conn, f"SELECT {CARD_COLUMNS} FROM best_buys WHERE wine_id = ? "
                                          "ORDER BY price_per_bottle_at_6", (wine_id,)))
-    awards = _rows(conn, """SELECT c.short, c.name AS competition, c.kind, c.weight, a.year, a.medal, a.points,
-                                   a.source, a.source_url, a.raw_text, m.confirmed
+    awards = _rows(conn, """SELECT a.id AS award_id, c.short, c.name AS competition, c.kind, c.weight, a.year,
+                                   a.medal, a.points, a.vintage AS rated_vintage, a.source, a.source_url,
+                                   a.raw_text, a.found_on, m.confirmed, m.match_score,
+                                   (SELECT s.name FROM offer o JOIN shop s ON s.id = o.shop_id
+                                     WHERE o.url = a.source_url LIMIT 1) AS shop
                             FROM award_match m JOIN award a ON a.id = m.award_id
                             JOIN competition c ON c.id = a.competition_id
                             WHERE m.wine_id = ? ORDER BY m.confirmed DESC, a.points DESC, a.year DESC""",
                    (wine_id,))
+    for a in awards:
+        a.update(award_origin(a))
     other_vintages = _rows(conn, """SELECT w2.id, w2.vintage, ws.overall AS score, ws.best_award
                                     FROM wine w2 JOIN wine_score ws ON ws.wine_id = w2.id
                                     WHERE w2.cuvee_id = ? AND w2.id != ? AND ws.overall IS NOT NULL
@@ -313,6 +319,24 @@ def wine(conn, wine_id: int) -> dict | None:
     return {"wine": w, "offers": offers, "awards": awards, "other_vintages": other_vintages,
             "history": history, "better": better, "watched": watched, "rule": rule, "chart": chart,
             "vivino": vivino}
+
+
+ORIGIN_NAMES = {"iwc": "International Wine Challenge results", "cmb": "Concours Mondial de Bruxelles results"}
+
+
+def award_origin(a: dict) -> dict:
+    """Where an award comes from, in words and as a link, so it can be checked."""
+    source, url = a.get("source") or "", a.get("source_url") or ""
+    if source == "shop page":
+        return {"origin": f"{a.get('shop') or 'shop'} page", "origin_url": url or None}
+    if source == "upload":
+        m = re.match(r"upload:(\d+):(.*)", url)
+        return {"origin": f"your file {m.group(2)}" if m else "your file",
+                "origin_url": f"/upload/{m.group(1)}" if m else "/upload"}
+    if source == "manual":
+        return {"origin": "entered by hand", "origin_url": None}
+    return {"origin": ORIGIN_NAMES.get(source, source or "unknown"),
+            "origin_url": url if url.startswith("http") else None}
 
 
 def order(conn) -> dict:

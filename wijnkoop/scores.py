@@ -119,6 +119,7 @@ def nothing_better_for_less(items: list[tuple]) -> set:
 
 
 def _wine_scores(con, now):
+    reparse_shop_awards(con)
     rows = con.execute(
         """SELECT m.wine_id, w.cuvee_id, c.producer_key, a.medal, a.points, a.raw_text,
                   comp.short, comp.weight, comp.kind, a.year, a.source
@@ -316,3 +317,26 @@ def recompute(con, today: dt.date | None = None):
     con.commit()
     return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),
             "fit_wines": n_fit, "rate_pct": rate * 100}
+
+
+def reparse_shop_awards(con) -> int:
+    """Read the stored text of every award a shop printed again with the current rules, so a
+    fix in reading them (such as "96-100 punten" being 96, not 100) also corrects old ones."""
+    import sqlite3
+
+    from .reference import parse_award_text
+
+    changed = 0
+    for r in con.execute("""SELECT id, raw_text, medal, points, year FROM award
+                            WHERE source = 'shop page' AND raw_text IS NOT NULL""").fetchall():
+        parsed = parse_award_text(r["raw_text"])
+        if not parsed or (parsed["medal"], parsed["points"], parsed["year"]) == (r["medal"], r["points"], r["year"]):
+            continue
+        try:
+            con.execute("UPDATE award SET medal=?, points=?, year=? WHERE id=?",
+                        (parsed["medal"], parsed["points"], parsed["year"], r["id"]))
+        except sqlite3.IntegrityError:  # the corrected award is already stored: drop this copy
+            con.execute("DELETE FROM award_match WHERE award_id=?", (r["id"],))
+            con.execute("DELETE FROM award WHERE id=?", (r["id"],))
+        changed += 1
+    return changed
