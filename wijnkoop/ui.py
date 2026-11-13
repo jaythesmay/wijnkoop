@@ -42,7 +42,7 @@ SORTS = {
     "price": "price_per_bottle_at_6 ASC",
 }
 CARD_COLUMNS = """offer_id, wine_id, wine, vintage, producer, colour, country, shop, price_per_bottle_at_6,
-    normal_price, promotion, deal, deal_reason, score, awards, best_award, value, fair_price, price_quality,
+    price_per_bottle_as_sold, volume_cl, normal_price, promotion, deal, deal_reason, score, awards, best_award, value, fair_price, price_quality,
     price_as_93, cheaper_than_pct, nothing_better_for_less, verdict, gold_or_better, other_vintages_awarded, other_vintages_avg, producer_wines_awarded, producer_avg,
     online_in_stock, url, grapes, category"""
 

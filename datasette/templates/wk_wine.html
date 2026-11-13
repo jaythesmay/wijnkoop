@@ -25,7 +25,8 @@
 <article class="card" id="o{{ o.offer_id }}">
   <div class="price-row" style="margin-top:0">
     <div class="price"><b>{{ o.price_per_bottle_at_6|money }}</b>
-      <small>per bottle at 6 at {{ o.shop }}{% if o.normal_price and o.normal_price - o.price_per_bottle_at_6 > 0.01 %} · normally {{ o.normal_price|money }}{% endif %}</small></div>
+      <small>{{ m.m_unit(o) }} at {{ o.shop }}{% if o.normal_price and o.normal_price - o.price_per_bottle_at_6 > 0.01 %} · normally {{ o.normal_price|money }}{% endif %}</small>
+      {% if o.volume_cl|bottle_size %}<small class="size">{{ o.volume_cl|bottle_size|capitalize }}: {{ o.price_per_bottle_as_sold|money }} per bottle</small>{% endif %}</div>
     {% if o.verdict %}<div class="fair"><span class="pill v-{{ o.verdict|verdict_class }}">{{ o.verdict }}</span>
       <small>like a 93 for {{ o.price_as_93|money }} · cheaper than {{ o.cheaper_than_pct }}% of award wines</small></div>{% endif %}
   </div>

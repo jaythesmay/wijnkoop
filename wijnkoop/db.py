@@ -275,9 +275,10 @@ SELECT
     w.colour,
     w.country,
     s.name AS shop,
-    os.bottle_price_at_6 AS price_per_bottle_at_6,
+    os.bottle_price_at_6 AS price_per_bottle_at_6,  -- per 75 cl, so every bottle size compares fairly
+    ROUND(os.bottle_price_at_6 * COALESCE(o.volume_cl, 75) / 75.0, 2) AS price_per_bottle_as_sold,
     os.order_of_6 AS price_6_bottles_incl_delivery,
-    o.price AS normal_price,
+    COALESCE(o.price_per_75cl, o.price) AS normal_price,
     o.promotion,
     CASE os.is_deal WHEN 1 THEN 'yes' ELSE 'no' END AS deal,
     os.deal_reason,

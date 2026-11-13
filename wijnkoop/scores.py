@@ -202,12 +202,23 @@ def _reference_price(history: list[tuple[str, float]], normal: float | None, tod
 def refresh_effective_prices(con) -> int:
     """Apply the current deal rules (and the Premium price) to every current offer, so a change
     in those rules counts without reading all shops again. Returns the number of offers changed."""
+    from .bottles import fix_volume
     from .deals import effective_per_75cl, parse_deal
 
     changed = 0
-    for r in con.execute("""SELECT id, price, volume_cl, promotion, member_price, effective_price_per_75cl
+    for r in con.execute("""SELECT id, title, url, price, volume_cl, promotion, member_price,
+                                   effective_price_per_75cl
                             FROM offer WHERE is_current = 1""").fetchall():
-        eff = effective_per_75cl(r["price"], r["volume_cl"], r["promotion"], r["member_price"])
+        volume = fix_volume(r["volume_cl"], r["title"], r["url"])
+        if volume != r["volume_cl"]:
+            # A half bottle or magnum stored as 75 cl: correct its size and its price history.
+            con.execute("UPDATE offer SET volume_cl=?, price_per_75cl=ROUND(price * 75.0 / ?, 2) WHERE id=?",
+                        (volume, volume, r["id"]))
+            con.execute("""UPDATE price_history SET effective_price_per_75cl =
+                           ROUND(effective_price_per_75cl * ? / ?, 2) WHERE offer_id=?""",
+                        (r["volume_cl"] or 75.0, volume, r["id"]))
+            changed += 1
+        eff = effective_per_75cl(r["price"], volume, r["promotion"], r["member_price"])
         if eff is None or eff == r["effective_price_per_75cl"]:
             continue
         deal = parse_deal(r["promotion"], r["price"])
@@ -282,7 +293,8 @@ def recompute(con, today: dt.date | None = None):
         eff = o["effective_price_per_75cl"]
         if not eff:
             continue
-        bottle = round(eff * (o["volume_cl"] or 75) / 75, 2)  # per bottle as sold
+        # Every price is compared per 75 cl; an order of 6 is 6 bottles of the size sold.
+        bottle = round(eff * (o["volume_cl"] or 75) / 75, 2)
         total6, delivery = order_of_six(bottle, o["delivery_cost"], o["free_delivery_from"])
         normal = o["price_per_75cl"]
         if o["was_price"] and o["volume_cl"]:
@@ -297,8 +309,8 @@ def recompute(con, today: dt.date | None = None):
         score = wine_overall.get(o["wine_id"])
         fair = ratio = value = p93 = rank = None
         if score:
-            fair = round(fair_price(score, c, d) * (o["volume_cl"] or 75) / 75, 2)
-            ratio = round(fair / bottle, 2)
+            fair = round(fair_price(score, c, d), 2)
+            ratio = round(fair / eff, 2)
             p93 = price_as(eff, score, rate)
             # rank of this offer among the market (the cheapest offer of each wine)
             if len(market) >= 2:
@@ -311,7 +323,7 @@ def recompute(con, today: dt.date | None = None):
                                         is_deal, deal_reason, value, fair_price, price_quality, verdict, updated,
                                         wine, price_as_93, market_rank, best_for_price)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (o["id"], bottle, total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
+            (o["id"], round(eff, 2), total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
              value, fair, ratio, verdict(rank), now, o["label"], p93, rank, int(o["id"] in frontier)),
         )
     con.commit()
