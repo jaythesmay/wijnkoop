@@ -1,6 +1,7 @@
 """The everyday WijnKoop screens, served by Datasette next to the expert tables.
 
-Pages: / (home), /find, /search, /wine/<id>, /week, /watchlist, /order, /how, /awards, /upload.
+Pages: / (home), /find, /search, /wine/<id>, /week, /watchlist, /order, /how, /awards, /upload,
+/update (read shops now).
 The data comes from wijnkoop/ui.py; the HTML from datasette/templates/wk_*.html.
 """
 import os
@@ -10,7 +11,7 @@ from datasette import hookimpl
 from datasette.utils.asgi import Response
 from markupsafe import Markup
 
-from wijnkoop import ui
+from wijnkoop import jobs, ui
 from wijnkoop.bottles import bottle_size
 from wijnkoop.awards import upload as award_upload
 
@@ -188,6 +189,30 @@ async def watch(datasette, request):
     return Response.redirect(_next(post))
 
 
+async def update(datasette, request):
+    """Read shops now: one shop or every shop for which it makes sense, never twice at once."""
+    if request.method == "POST":
+        post = await request.post_vars()
+        if post.get("stop"):
+            await _write(datasette, jobs.stop_job, int(post["stop"]))
+            return Response.redirect("/update")
+        if post.get("shop") == "all":
+            status = await _read(datasette, jobs.shop_status)
+            keys = status["useful"]
+        else:
+            keys = [post.get("shop") or ""]
+        r = await _write(datasette, jobs.request_run, keys, bool(post.get("force")))
+        if r["job_id"]:
+            jobs.launch(r["job_id"])
+        return Response.redirect("/update?" + urlencode(
+            {"started": ",".join(r["shops"]), "busy": ",".join(r["busy"]), "skipped": ",".join(r["skipped"])}))
+    status = await _read(datasette, jobs.shop_status)
+    names = {s["key"]: s["name"] for s in status["shops"]}
+    said = {k: [names.get(x, x) for x in (request.args.get(k) or "").split(",") if x]
+            for k in ("started", "busy", "skipped")}
+    return await _page(datasette, request, "wk_update.html", "Read shops now", said=said, **status)
+
+
 @hookimpl
 def register_routes():
     return [
@@ -205,6 +230,7 @@ def register_routes():
         (r"^/order$", order),
         (r"^/order/add$", order_add),
         (r"^/watch$", watch),
+        (r"^/update$", update),
     ]
 
 

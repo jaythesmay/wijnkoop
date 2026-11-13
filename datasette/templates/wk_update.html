@@ -1,0 +1,63 @@
+{% extends "wk_base.html" %}
+{% block content %}
+{% if jobs %}<meta http-equiv="refresh" content="30">{% endif %}
+<h1>Read shops now</h1>
+<p class="lead">Every shop is read automatically each week ({{ next_weekly.strftime('%A %d %B %H:%M') }} is next).
+Start a shop here to have new prices sooner. A run goes on in the background when you close this page;
+a big shop takes hours, because WijnKoop waits between pages as the shops ask.</p>
+
+{% if said.started %}<div class="hint ok">Started: {{ said.started|join(', ') }}.{% if said.started|length > 1 %} The shops are read one after the other.{% endif %}</div>{% endif %}
+{% if said.busy %}<div class="hint">Already being read: {{ said.busy|join(', ') }}.</div>{% endif %}
+{% if said.skipped %}<div class="hint">Not started, read recently or the weekly run is close: {{ said.skipped|join(', ') }}. Use “Read anyway” to start one.</div>{% endif %}
+
+<form method="post" action="/update" class="panel" style="margin:14px 0 18px;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="shop" value="all">
+  <button class="primary" type="submit"{% if not useful %} disabled{% endif %}>Read every shop that needs it{% if useful %} ({{ useful|length }}){% endif %}</button>
+  <span class="small muted">{% if useful %}Skips shops read in the last two days and shops already being read.{% else %}Every shop was read recently or is being read now.{% endif %}</span>
+</form>
+
+{% if jobs %}
+<h2>Going on now</h2>
+<div class="panel"><table class="list">
+{% for j in jobs %}
+<tr>
+  <td>{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% if s.state == 'running' %} <span class="pill v-top">reading</span>{% elif s.state == 'queued' %} <span class="pill v-fair">waiting</span>{% else %} <span class="pill v-good">done</span>{% endif %}{% endfor %}{% if not loop.last %} · {% endif %}{% endfor %}
+    <div class="meta">Started {{ j.requested.replace('T', ' ')[:16] }}</div></td>
+  <td class="num">
+    <form method="post" action="/update">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="stop" value="{{ j.id }}">
+      <button type="submit">Stop</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+</table></div>
+<p class="small muted">This page refreshes itself every 30 seconds. A stopped shop carries on where it stopped the next time it is read.</p>
+{% endif %}
+
+<h2>Shops</h2>
+<div class="panel"><table class="list">
+<tr><th>Shop</th><th>Last read</th><th></th></tr>
+{% for s in shops %}
+<tr>
+  <td><b>{{ s.name }}</b><div class="meta">{{ s.wines }} wine{{ 's' if s.wines != 1 }}{% if s.browser %} · headless browser{% endif %}</div></td>
+  <td>{{ s.last_text }}{% if s.last %}<div class="meta">{{ s.last.pages_ok }} pages{% if s.last.pages_failed %}, {{ s.last.pages_failed }} failed{% endif %}</div>{% endif %}
+    <div class="meta">{% if s.state == 'running' %}<span class="pill v-top">reading</span> {% elif s.state == 'queued' %}<span class="pill v-fair">waiting</span> {% endif %}{{ s.advice }}</div></td>
+  <td class="num">
+    {% if s.state in ('useful', 'fresh', 'soon') %}
+    <form method="post" action="/update">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="shop" value="{{ s.key }}">
+      {% if s.state == 'useful' %}<button class="primary" type="submit">Read now</button>
+      {% else %}<input type="hidden" name="force" value="1"><button type="submit">Read anyway</button>{% endif %}
+    </form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table></div>
+<p class="small muted" style="margin-top:12px">Every run is in the <a href="/wijnkoop/run_log?_sort_desc=id">update log</a>.
+Messages while it runs are in the container's log in Container Station.</p>
+{% endblock %}
