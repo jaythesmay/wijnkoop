@@ -61,7 +61,7 @@ def test_look_up_stores_rating_and_counts_searches(tmp_path, monkeypatch):
     row = vivino.look_up(con, "secret", wine_id, client=http, today=TODAY)
     assert row["rating"] == 4.3 and row["vivino_title"] == "Catena Zapata Malbec Argentino"
     url, params, headers = http.calls[0]
-    assert url == vivino.ENDPOINT and params["q"] == "site:vivino.com Catena Zapata Malbec Argentino 2020"
+    assert url == vivino.ENDPOINT and params["q"] == "site:vivino.com Catena Zapata Malbec Argentino"
     assert headers["X-Subscription-Token"] == "secret"
     assert vivino.searches_this_month(con, TODAY) == 1
     # the wine page shows it, apart from the award score
@@ -120,3 +120,14 @@ def test_look_up_stores_price_and_old_tables_get_the_column(tmp_path):
     row = vivino.look_up(con, "secret", wine_id, client=FakeHttp(priced), today=TODAY)
     assert row["price"] == 27.5 and row["rating"] is None
     assert ui.wine(con, wine_id)["vivino"]["rating"]["price"] == 27.5
+
+
+def test_searches_leave_out_vintage_and_bottle_size():
+    from wijnkoop.vivino import query_for, search_link, search_name
+
+    assert search_name("Taylor's 10 Years Old Tawny Port 37,5cl") == "Taylor's 10 Years Old Tawny Port"
+    assert search_name("Catena Zapata Malbec Argentino 2020") == "Catena Zapata Malbec Argentino"
+    assert search_name("Bollinger Special Cuvée Magnum 1,5 L") == "Bollinger Special Cuvée"
+    assert search_name("Chablis Premier Cru halve fles") == "Chablis Premier Cru"
+    assert search_link("Muga Reserva 2019", 2019) == "https://www.vivino.com/search/wines?q=Muga+Reserva"
+    assert query_for("Muga Reserva", 2019) == "site:vivino.com Muga Reserva"
