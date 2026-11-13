@@ -527,23 +527,97 @@ def _import(con, filename, data, competition, year, today) -> int:
         if not cur.rowcount:
             continue
         stored += 1
-        award_id = cur.lastrowid
-        cid, score = (None, 0)
-        if rec.get("producer"):
-            cid, score = matcher.best({"producer": rec["producer"], "name": rec["name"], "colour": rec.get("colour")})
-        if score < REVIEW:
-            cid, score = _best(keys, rec)
-        if cid and score >= REVIEW:
-            wine_id = matcher.wine_for(cid, rec.get("vintage"))
-            confirmed = 1 if score >= AUTO else None
-            con.execute("INSERT OR IGNORE INTO award_match (award_id, wine_id, match_score, confirmed) "
-                        "VALUES (?,?,?,?)", (award_id, wine_id, round(score / 100, 3), confirmed))
-            linked += 1 if confirmed else 0
-            review += 0 if confirmed else 1
+        how_linked = _link(con, cur.lastrowid, rec, matcher, keys)
+        linked += how_linked == "auto"
+        review += how_linked == "review"
     con.execute("UPDATE award_upload SET awards=?, linked=?, to_review=? WHERE id=?",
                 (stored, linked, review, upload_id))
+    _keep_file(upload_id, filename, data)
     con.commit()
     return upload_id
+
+
+def _link(con, award_id: int, rec: dict, matcher, keys: dict, new_only: int = 0) -> str | None:
+    """Link one official award to a shop wine. Returns 'auto', 'review' (probable) or None.
+    new_only: only cuvees with a higher id count (the ones added since the last check)."""
+    cid, score = (None, 0)
+    if rec.get("producer"):
+        cid, score = matcher.best({"producer": rec["producer"], "name": rec["name"], "colour": rec.get("colour")})
+        if cid is not None and cid <= new_only:
+            cid, score = None, 0
+    if score < REVIEW:
+        cid, score = _best(keys, rec)
+    if not cid or score < REVIEW:
+        return None
+    wine_id = matcher.wine_for(cid, rec.get("vintage"))
+    confirmed = 1 if score >= AUTO else None
+    con.execute("INSERT OR IGNORE INTO award_match (award_id, wine_id, match_score, confirmed) "
+                "VALUES (?,?,?,?)", (award_id, wine_id, round(score / 100, 3), confirmed))
+    return "auto" if confirmed else "review"
+
+
+# ---------------------------------------------------------------- kept files, later links
+
+def stored_file(upload_id: int, filename: str):
+    """Where the uploaded file itself is kept (in the data folder, next to the database)."""
+    from .. import config
+
+    safe = re.sub(r"[^\w.\- ]+", "_", filename).strip() or "upload"
+    return config.DATA_DIR / "uploads" / f"{upload_id}-{safe}"
+
+
+def _keep_file(upload_id: int, filename: str, data: bytes):
+    path = stored_file(upload_id, filename)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except OSError:  # the awards are stored anyway; the copy of the file is a convenience
+        pass
+
+
+RELINK_SETTING = "upload_relink_cuvee_id"
+
+
+def relink_uploads(con) -> int:
+    """Official results never change, but WijnKoop keeps finding new wines (new shops, new
+    vintages). Check every uploaded award that is not linked yet against the wines added since
+    the last check. Returns the number of awards newly linked."""
+    from .importer import Matcher
+
+    row = con.execute("SELECT value FROM setting WHERE key=?", (RELINK_SETTING,)).fetchone()
+    since = int(row[0]) if row and str(row[0]).isdigit() else 0
+    top = con.execute("SELECT COALESCE(MAX(id), 0) FROM cuvee").fetchone()[0]
+    if top <= since:
+        return 0
+    open_awards = con.execute(
+        """SELECT a.id, a.name_raw, a.producer_raw, a.colour, a.vintage, a.source_url FROM award a
+           WHERE a.source = 'upload' AND NOT EXISTS (SELECT 1 FROM award_match m WHERE m.award_id = a.id)"""
+    ).fetchall()
+    found = 0
+    if open_awards:
+        keys = {cid: k for cid, k in _match_index(con).items() if cid > since}
+        matcher = Matcher(con)
+        touched = set()
+        for a in open_awards:
+            rec = {"name": a["name_raw"], "producer": a["producer_raw"], "colour": a["colour"],
+                   "vintage": a["vintage"]}
+            if _link(con, a["id"], rec, matcher, keys, new_only=since):
+                found += 1
+                touched.add(a["source_url"].split(":")[1])
+        for upload_id in touched:
+            _count_links(con, int(upload_id))
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (RELINK_SETTING, str(top)))
+    con.commit()
+    return found
+
+
+def _count_links(con, upload_id: int):
+    like = f"upload:{upload_id}:%"
+    linked, review = con.execute(
+        """SELECT COALESCE(SUM(m.confirmed = 1), 0), COALESCE(SUM(m.confirmed IS NULL), 0)
+           FROM award a JOIN award_match m ON m.award_id = a.id
+           WHERE a.source = 'upload' AND a.source_url LIKE ?""", (like,)).fetchone()
+    con.execute("UPDATE award_upload SET linked=?, to_review=? WHERE id=?", (linked, review, upload_id))
 
 
 def upload_report(con, upload_id: int) -> dict:
@@ -587,6 +661,7 @@ def upload_report(con, upload_id: int) -> dict:
                                  WHERE um.wine_id = w.id AND ua.source = 'upload' AND ua.source_url LIKE ?)
                ORDER BY w.name LIMIT 200""", (up["competition_id"], up["year"], up["year"], like))]
     counts = Counter(r["check"] for r in matched)
+    up["kept"] = stored_file(upload_id, up["filename"]).exists()
     return {"upload": up, "sample": sample, "matched": matched, "missing": missing, "counts": dict(counts)}
 
 
@@ -602,9 +677,12 @@ def _same(official: str, shop: str) -> bool:
 
 
 def uploads(con) -> list[dict]:
-    return [dict(r) for r in con.execute(
+    rows = [dict(r) for r in con.execute(
         """SELECT u.id, u.filename, u.kind, u.year, u.uploaded_on, u.awards, u.linked, u.to_review, c.short
            FROM award_upload u JOIN competition c ON c.id = u.competition_id ORDER BY u.id DESC""")]
+    for r in rows:
+        r["kept"] = stored_file(r["id"], r["filename"]).exists()
+    return rows
 
 
 def delete_upload(con, upload_id: int) -> int:
@@ -612,8 +690,11 @@ def delete_upload(con, upload_id: int) -> int:
     ids = [r[0] for r in con.execute("SELECT id FROM award WHERE source='upload' AND source_url LIKE ?", (like,))]
     con.executemany("DELETE FROM award_match WHERE award_id=?", [(i,) for i in ids])
     con.executemany("DELETE FROM award WHERE id=?", [(i,) for i in ids])
+    up = con.execute("SELECT filename FROM award_upload WHERE id=?", (upload_id,)).fetchone()
     con.execute("DELETE FROM award_upload WHERE id=?", (upload_id,))
     con.commit()
+    if up:
+        stored_file(upload_id, up["filename"]).unlink(missing_ok=True)
     from ..scores import recompute
 
     recompute(con)

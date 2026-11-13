@@ -130,6 +130,18 @@ async def upload_report(datasette, request):
                        **report)
 
 
+async def upload_file(datasette, request):
+    """The uploaded results file itself, as it was loaded."""
+    upload_id = int(request.url_vars["upload_id"])
+    rows = await _read(datasette, lambda conn: [dict(r) for r in conn.execute(
+        "SELECT filename FROM award_upload WHERE id=?", (upload_id,))])
+    path = award_upload.stored_file(upload_id, rows[0]["filename"]) if rows else None
+    if not path or not path.exists():
+        return Response.text("This file was not kept.", status=404)
+    return Response(path.read_bytes(), content_type="application/octet-stream",
+                    headers={"content-disposition": f'attachment; filename="{path.name.split("-", 1)[1]}"'})
+
+
 async def how(datasette, request):
     if request.method == "POST":
         post = await request.post_vars()
@@ -188,6 +200,7 @@ def register_routes():
         (r"^/how$", how),
         (r"^/upload$", upload),
         (r"^/upload/(?P<upload_id>\d+)$", upload_report),
+        (r"^/upload/(?P<upload_id>\d+)/file$", upload_file),
         (r"^/order$", order),
         (r"^/order/add$", order_add),
         (r"^/watch$", watch),

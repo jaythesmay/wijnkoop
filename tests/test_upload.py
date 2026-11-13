@@ -16,6 +16,14 @@ FILES = Path(__file__).parent / "fixtures" / "upload"
 TODAY = dt.date(2026, 11, 16)
 
 
+@pytest.fixture(autouse=True)
+def data_dir(tmp_path, monkeypatch):
+    from wijnkoop import config
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    return tmp_path / "data"
+
+
 def _parse(name):
     rows, kind = upload.read_file(name, (FILES / name).read_bytes())
     recs, how = upload.records_from_rows(rows)
@@ -183,3 +191,37 @@ def test_upload_pages(con, tmp_path):
     assert "Bodegas Faustino Gran Reserva 2021" in report.text  # shop claim missing from the file
     assert "mundus.txt" in listing.text and 'href="/upload"' in awards.text
     assert bad.status_code == 400 and "error" in bad.json()
+
+
+def test_file_is_kept_and_new_wines_are_linked_later(con, data_dir):
+    r = upload.import_upload(con, "mundus 2025.txt", RESULTS, today=TODAY)
+    upload_id = r["upload"]["id"]
+    kept = upload.stored_file(upload_id, "mundus 2025.txt")
+    assert kept.read_bytes() == RESULTS and kept.parent == data_dir / "uploads"
+    assert r["upload"]["kept"] and upload.uploads(con)[0]["kept"]
+    assert upload.relink_uploads(con) == 0  # nothing new since the upload
+    # a later shop run finds the wine that was not in any shop yet
+    save_product(con, 1, _wine(9, "Some Unknown Winery Tinto", 9.0), TODAY.isoformat())
+    assert upload.relink_uploads(con) == 1
+    assert upload.relink_uploads(con) == 0  # checked once per new wine
+    u = upload.upload_report(con, upload_id)["upload"]
+    assert u["linked"] == 3
+    assert upload.delete_upload(con, upload_id) == 3
+    assert not kept.exists()
+
+
+def test_download_kept_file(con, tmp_path):
+    from datasette.app import Datasette
+
+    r = upload.import_upload(con, "mundus.txt", RESULTS, today=TODAY)
+    con.close()
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                   template_dir=str(ROOT / "datasette" / "templates"))
+
+    async def run():
+        return (await ds.client.get(f"/upload/{r['upload']['id']}/file"),
+                await ds.client.get(f"/upload/{r['upload']['id']}"), await ds.client.get("/upload/999/file"))
+
+    f, page, missing = asyncio.run(run())
+    assert f.status_code == 200 and f.content == RESULTS and 'filename="mundus.txt"' in f.headers["content-disposition"]
+    assert "download the file" in page.text and missing.status_code == 404

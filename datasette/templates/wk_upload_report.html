@@ -2,12 +2,13 @@
 {% block content %}
 <p class="small"><a href="/upload">← All uploads</a></p>
 <h1>{{ upload.filename }}</h1>
-<p class="lead">{{ upload.competition }}{% if upload.year %} {{ upload.year }}{% else %} (year unknown){% endif %} · {{ upload.kind }} · loaded {{ upload.uploaded_on }}</p>
+<p class="lead">{{ upload.competition }}{% if upload.year %} {{ upload.year }}{% else %} (year unknown){% endif %} · {{ upload.kind }} · loaded {{ upload.uploaded_on }}{% if upload.kept %} · <a href="/upload/{{ upload.id }}/file">download the file</a>{% endif %}</p>
 
 <div class="panel" style="margin-bottom:18px">
   <p style="margin-top:0"><b>How the file was read.</b> {{ upload.how }}</p>
   <p style="margin-bottom:0">{{ upload.rows_read }} lines read, <b>{{ upload.awards }}</b> awards found,
-  <b>{{ upload.linked }}</b> linked to a wine in your shops{% if upload.to_review %}, {{ upload.to_review }} more that probably match{% endif %}.</p>
+  <b>{{ upload.linked }}</b> linked to a wine in your shops{% if upload.to_review %}, {{ upload.to_review }} more that probably match{% endif %}.
+  The awards are kept: after every shop run they are checked again against the wines found since.</p>
 </div>
 
 {% if sample %}

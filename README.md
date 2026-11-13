@@ -77,7 +77,10 @@ and open `http://<nas tailscale name>:8001`.
   contents (or, for plain text, from headings such as "GOLD" or a medal line under each wine), takes the
   competition and year from the file name or the title, links the wines and lists per wine whether the
   shop's claim is confirmed, different, or missing from the official list. These awards count like the
-  others; deleting the upload removes them again. Scanned PDFs (pictures of text) cannot be read.
+  others, and where an official result and a shop's claim cover the same competition and year, the
+  official one counts. Deleting the upload removes them again. Scanned PDFs (pictures of text) cannot
+  be read. The file itself is kept in `/data/uploads`, and after every shop run the awards that are
+  not linked yet are checked against the wines found since, so old results keep finding new wines.
 
 ## Commands (run inside the container)
 | Command | What it does |
