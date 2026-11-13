@@ -4,7 +4,7 @@ import logging
 
 from . import db
 from .fetch import NotAllowed, PoliteClient
-from .deals import parse_deal
+from .deals import effective_per_75cl, parse_deal
 from .normalize import cuvee_key, norm, wine_key
 from .reference import competition_id, parse_award_text
 from .shops import gall
@@ -178,7 +178,7 @@ def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=Non
     per75 = round(p.price * 75 / p.volume_cl, 2) if p.price and p.volume_cl else None
     deal = parse_deal(p.promotion, p.price)
     factor = deal.factor if deal else 1.0
-    effective = round(per75 * factor, 2) if per75 else None
+    effective = effective_per_75cl(p.price, p.volume_cl, p.promotion, p.member_price)
     stock = None if p.in_stock_online is None else int(p.in_stock_online)
     values = dict(
         wine_id=wine_id, url=p.url, title=p.title, category=p.category, volume_cl=p.volume_cl,

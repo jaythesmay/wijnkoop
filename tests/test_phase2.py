@@ -70,6 +70,15 @@ def test_not_wine_words():
     ("10% korting", 10, "percent", 0.9),
     ("1+1 gratis", 10, "buy_x_pay_y", 0.5),
     ("2e halve prijs", 10, "nth_bottle", 0.75),
+    ("2de fles 50%", 10, "nth_bottle", 0.75),
+    ("2e fles -50%", 10, "nth_bottle", 0.75),
+    ("2e fles voor 50%", 10, "nth_bottle", 0.75),
+    ("50% korting op de 2e fles", 10, "nth_bottle", 0.75),
+    ("Tweede fles halve prijs", 10, "nth_bottle", 0.75),
+    ("2e fles voor de halve prijs", 10, "nth_bottle", 0.75),
+    ("3 voor 2", 10, "buy_x_pay_y", round(4 / 6, 4)),
+    ("3 voor €20", 10, "bundle_price", round(40 / 60, 4)),
+    ("Nu in de aanbieding", 10, "unknown", 1.0),
 ])
 def test_parse_deal(text, price, kind, factor):
     d = deals.parse_deal(text, price)
@@ -269,3 +278,28 @@ def test_medal_word_in_competition_name():
     assert a["competition"][0] == "Berliner Wein Trophy" and a["medal"] == "Gold"
     assert parse_award_text("Berliner Wein Trophy 2024", "Zilver")["medal"] == "Silver"
     assert parse_award_text("IWC 2025", "Trophy")["medal"] == "Trophy"
+
+
+def test_premium_price_counts_when_lower():
+    assert deals.effective_per_75cl(10.0, 75, None, 8.5) == 8.5
+    assert deals.effective_per_75cl(10.0, 75, "2e fles 50% korting", 8.5) == 7.5  # the deal is better
+    assert deals.effective_per_75cl(10.0, 75, None, 12.0) == 10.0
+    assert deals.effective_per_75cl(20.0, 150, None, None) == 10.0
+    assert deals.line_cost(None, 10, 2, 8.5) == 17
+    assert deals.line_cost("2e fles 50% korting", 10, 2, 8.5) == 15
+
+
+def test_recompute_applies_new_rules_and_premium(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    for i, (promo, member) in enumerate([("2de fles 50%", None), (None, 8.0)], 1):
+        p = gall.GallProduct(url=f"https://www.gall.nl/w-{i}.html", product_id=str(i), title=f"Wijn {i} Rood",
+                             colour="red", volume_cl=75, price=10.0, promotion=promo, member_price=member,
+                             in_stock_online=True, specs={"vintage": "2022"})
+        save_product(con, 1, p, "2026-11-13")
+    assert [r[0] for r in con.execute("SELECT effective_price_per_75cl FROM offer ORDER BY id")] == [7.5, 8.0]
+    # an offer saved under older rules is brought up to date by the next recompute
+    con.execute("UPDATE offer SET effective_price_per_75cl = 10.0, deal_type = 'unknown'")
+    scores.recompute(con, dt.date(2026, 11, 13))
+    assert [tuple(r) for r in con.execute("SELECT effective_price_per_75cl, deal_type FROM offer ORDER BY id")] == [
+        (7.5, "nth_bottle"), (8.0, None)]
+    assert [r[0] for r in con.execute("SELECT bottle_price_at_6 FROM offer_score ORDER BY offer_id")] == [7.5, 8.0]

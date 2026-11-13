@@ -32,7 +32,7 @@
   <div class="tags">
     {% if o.promotion %}<span class="tag promo">{{ o.promotion }}</span>{% endif %}
     {% for t in o.tags if t not in ('Gold or better',) %}<span class="tag {{ {'Deal': 'deal', 'Out of stock online': 'stock', 'Nothing better for less': 'best'}.get(t, '') }}">{{ t }}{% if t == 'Deal' and o.deal_reason %}: {{ o.deal_reason }}{% endif %}</span>{% endfor %}
-    {% if o.member_price %}<span class="tag">Member price {{ o.member_price|money }}</span>{% endif %}
+    {% if o.member_price %}<span class="tag deal">Premium price {{ o.member_price|money }} (counted)</span>{% endif %}
   </div>
   <div class="actions">
     {{ m.order_button(o.offer_id, o.in_order, 6, '#o' ~ o.offer_id) }}

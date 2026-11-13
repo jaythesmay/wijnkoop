@@ -64,7 +64,8 @@ and open `http://<nas tailscale name>:8001`.
 - Logs every change (new wine, price, promotion, stock, vintage, award, gone) in `event`;
   the "Weekly overview" page shows the last 7 days.
 - Scores: awards and critic points (silver and up) combined with competition weights
-  (`wijnkoop/reference.py`), value against price, and a deal rule based on the 90-day
+  (`wijnkoop/reference.py`), value against price (per bottle at 6 with the promotion, or the Gall
+  Premium price when lower), and a deal rule based on the 90-day
   median price for an order of 6 bottles (`wijnkoop/scores.py`).
 - Sends the weekly overview by e-mail on Wednesday at 08:00 (later the same week if the NAS was off).
 - Older databases are upgraded automatically when the container starts.
