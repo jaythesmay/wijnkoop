@@ -1,0 +1,66 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<p class="small"><a href="/upload">← All uploads</a></p>
+<h1>{{ upload.filename }}</h1>
+<p class="lead">{{ upload.competition }}{% if upload.year %} {{ upload.year }}{% else %} (year unknown){% endif %} · {{ upload.kind }} · loaded {{ upload.uploaded_on }}</p>
+
+<div class="panel" style="margin-bottom:18px">
+  <p style="margin-top:0"><b>How the file was read.</b> {{ upload.how }}</p>
+  <p style="margin-bottom:0">{{ upload.rows_read }} lines read, <b>{{ upload.awards }}</b> awards found,
+  <b>{{ upload.linked }}</b> linked to a wine in your shops{% if upload.to_review %}, {{ upload.to_review }} more that probably match{% endif %}.</p>
+</div>
+
+{% if sample %}
+<h2>First awards in the file</h2>
+<p class="small muted">Check that these look right. If the names or medals are wrong, the file was misread: delete this upload below.</p>
+<div class="panel" style="margin-bottom:18px"><table class="list">
+<tr><th>Wine</th><th>Year</th><th>Result</th></tr>
+{% for a in sample %}
+<tr>
+  <td>{% if a.producer_raw and a.producer_raw|lower not in a.name_raw|lower %}<b>{{ a.producer_raw }}</b> {% endif %}{{ a.name_raw }}<div class="meta">{{ [a.colour, a.country]|select|join(' · ') }}</div></td>
+  <td>{{ a.vintage or '' }}</td>
+  <td>{{ a.medal or '' }}{% if a.points %} {{ '%g'|format(a.points) }} pts{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% else %}
+<div class="empty" style="margin-bottom:18px">No awards were found in this file. A scanned PDF (a picture of text) cannot be read; try the competition's web page saved as HTML, or its Excel or CSV list.</div>
+{% endif %}
+
+{% if matched %}
+<h2>Wines in your shops</h2>
+<p class="small muted">
+{% if counts.confirmed %}<span class="tag best">{{ counts.confirmed }} confirmed</span> {% endif %}
+{% if counts.different %}<span class="tag stock">{{ counts.different }} different from the shop</span> {% endif %}
+{% if counts['not on the shop page'] %}<span class="tag">{{ counts['not on the shop page'] }} not mentioned by the shop</span>{% endif %}
+</p>
+<div class="panel" style="margin-bottom:18px"><table class="list">
+<tr><th>Wine</th><th>Official</th><th>Shop says</th><th>Check</th></tr>
+{% for m in matched %}
+<tr>
+  <td><a href="/wine/{{ m.wine_id }}">{{ m.wine }}</a>
+    <div class="meta">file: {{ m.name_raw }}{% if m.award_vintage %} {{ m.award_vintage }}{% endif %}{% if not m.confirmed %} · probable match ({{ (m.match_score * 100)|round|int }}%){% endif %}{% if not m.on_sale %} · not on sale now{% endif %}</div></td>
+  <td>{{ m.medal or '' }}{% if m.points %} {{ '%g'|format(m.points) }}{% endif %}</td>
+  <td>{{ m.shop_says or '' }}</td>
+  <td>{% if m.check == 'confirmed' %}<span class="tag best">✓ confirmed</span>{% elif m.check == 'different' %}<span class="tag stock">different</span>{% else %}<span class="muted small">new</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% endif %}
+
+{% if missing %}
+<h2>Shop claims not in this file</h2>
+<p class="small muted">A shop says these wines won {{ upload.competition }}{% if upload.year %} {{ upload.year }}{% endif %}, but they are not in the official list you loaded. That can mean the shop is wrong, the year differs, or the list is incomplete.</p>
+<div class="panel" style="margin-bottom:18px"><table class="list">
+<tr><th>Wine</th><th>Shop says</th></tr>
+{% for m in missing %}
+<tr><td><a href="/wine/{{ m.wine_id }}">{{ m.wine }}</a></td><td>{{ m.medal or '' }}{% if m.points %} {{ '%g'|format(m.points) }}{% endif %}<div class="meta">{{ m.raw_text or '' }}</div></td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+
+<form method="post" action="/upload/{{ upload.id }}" onsubmit="return confirm('Remove this file and its awards from WijnKoop?')">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <button type="submit" name="delete" value="1">Delete this upload and its awards</button>
+</form>
+{% endblock %}

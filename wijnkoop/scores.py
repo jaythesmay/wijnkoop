@@ -121,7 +121,7 @@ def nothing_better_for_less(items: list[tuple]) -> set:
 def _wine_scores(con, now):
     rows = con.execute(
         """SELECT m.wine_id, w.cuvee_id, c.producer_key, a.medal, a.points, a.raw_text,
-                  comp.short, comp.weight, comp.kind, a.year
+                  comp.short, comp.weight, comp.kind, a.year, a.source
            FROM award_match m
            JOIN award a ON a.id = m.award_id
            JOIN competition comp ON comp.id = a.competition_id
@@ -129,6 +129,12 @@ def _wine_scores(con, now):
            LEFT JOIN cuvee c ON c.id = w.cuvee_id
            WHERE COALESCE(m.confirmed, 1) = 1"""
     ).fetchall()
+    # One result per competition and year: an official list (read or uploaded) beats what a shop prints.
+    official = {(r["wine_id"], r["short"], r["year"]) for r in rows if r["source"] != "shop page"}
+    official_any = {(w, c) for w, c, _ in official}
+    rows = [r for r in rows if r["source"] != "shop page" or not (
+        (r["wine_id"], r["short"], r["year"]) in official
+        or (r["year"] is None and (r["wine_id"], r["short"]) in official_any))]
     per_wine = defaultdict(list)
     gold = set()
     info = {}

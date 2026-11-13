@@ -1,0 +1,68 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Check awards with a results file</h1>
+<p class="lead">Load the official results of any competition or critic: a saved web page, Excel, CSV, PDF, JSON or plain text.
+WijnKoop works out the columns itself, adds the awards, links them to wines in your shops and shows where a shop's claim differs from the official list.</p>
+
+<form id="upload" class="panel filters" style="margin-bottom:18px">
+  <div style="margin-bottom:12px">
+    <label for="file">Results file</label>
+    <input type="file" id="file" required>
+  </div>
+  <div class="grid2" style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:12px">
+    <div>
+      <label for="competition">Competition or critic</label>
+      <select id="competition">
+        <option value="">Work it out from the file</option>
+        {% for c in competitions %}<option value="{{ c.short }}">{{ c.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="year">Year</label>
+      <input type="number" id="year" min="1990" max="2100" placeholder="auto">
+    </div>
+  </div>
+  <button class="primary" type="submit" id="go">Read file</button>
+  <p id="status" class="small muted" style="margin:10px 0 0" role="status"></p>
+</form>
+
+<h2>Earlier uploads</h2>
+{% if uploads %}
+<div class="panel"><table class="list">
+<tr><th>File</th><th class="num">Awards</th><th class="num">Linked</th><th class="num">Probable</th></tr>
+{% for u in uploads %}
+<tr>
+  <td><a href="/upload/{{ u.id }}" style="word-break:break-word">{{ u.filename }}</a><div class="meta">{{ u.short }}{% if u.year %} {{ u.year }}{% endif %} · {{ u.kind }} · {{ u.uploaded_on }}</div></td>
+  <td class="num">{{ u.awards }}</td>
+  <td class="num">{{ u.linked }}</td>
+  <td class="num">{{ u.to_review }}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% else %}<div class="empty">No results files loaded yet.</div>{% endif %}
+
+<script>
+document.getElementById("upload").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const file = document.getElementById("file").files[0];
+  const status = document.getElementById("status");
+  const go = document.getElementById("go");
+  if (!file) return;
+  if (file.size > 40 * 1024 * 1024) { status.textContent = "This file is larger than 40 MB."; return; }
+  const q = new URLSearchParams({filename: file.name, competition: document.getElementById("competition").value,
+                                 year: document.getElementById("year").value});
+  go.disabled = true;
+  status.textContent = "Reading " + file.name + " and linking wines. A large file can take a minute…";
+  try {
+    const r = await fetch("/upload?" + q, {method: "POST", body: file, credentials: "same-origin",
+                                           headers: {"x-csrftoken": "{{ csrftoken() }}", "content-type": "application/octet-stream"}});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    location.href = "/upload/" + d.id;
+  } catch (e) {
+    status.textContent = "The file could not be read: " + e.message;
+    go.disabled = false;
+  }
+});
+</script>
+{% endblock %}

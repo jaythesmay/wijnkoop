@@ -224,6 +224,27 @@ def cmd_awards(args):
     con.close()
 
 
+def cmd_import_results(args):
+    from pathlib import Path
+
+    from .awards import upload
+
+    path = Path(args.file)
+    con = db.connect()
+    r = upload.import_upload(con, path.name, path.read_bytes(), args.competition, args.year)
+    u = r["upload"]
+    print(f"{u['competition']} {u['year'] or '(year unknown)'} from {u['kind']}: {u['how']}")
+    print(f"{u['awards']} awards, {u['linked']} linked to shop wines, {u['to_review']} probable matches")
+    for a in r["sample"][:5]:
+        print("  ", " ".join(str(x) for x in (a["producer_raw"], a["name_raw"], a["vintage"], a["medal"],
+                                              a["points"] and f"{a['points']:g} pts") if x))
+    for check, n in sorted(r["counts"].items()):
+        print(f"  {check}: {n}")
+    if r["missing"]:
+        print(f"  shop claims not in this file: {len(r['missing'])}")
+    print(f"Details: /upload/{u['id']} in WijnKoop")
+
+
 def main(argv=None):
     logging.basicConfig(
         level=logging.INFO,
@@ -246,6 +267,11 @@ def main(argv=None):
     p.add_argument("--source", action="append", choices=["iwc", "cmb"])
     p.add_argument("--match-only", action="store_true", help="only redo the linking to wines")
     p.set_defaults(func=cmd_awards)
+    p = sub.add_parser("import-results", help="read an official results file (any format) and check the awards")
+    p.add_argument("file")
+    p.add_argument("--competition", help="short name, e.g. DWWA, IWSC, Mundus Vini (default: from the file)")
+    p.add_argument("--year", type=int)
+    p.set_defaults(func=cmd_import_results)
     sub.add_parser("mail-setup", help="set up the weekly e-mail and send a test").set_defaults(func=cmd_mail_setup)
     p = sub.add_parser("vivino-setup", help="save a Brave Search API key for Vivino ratings")
     p.add_argument("--forget", action="store_true", help="delete the key and every stored Vivino rating")
