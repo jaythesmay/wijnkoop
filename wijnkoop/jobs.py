@@ -89,6 +89,10 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
              "queued": key in queued, "last": dict(last) if last else None,
              "broke_off": dict(broke_off) if broke_off and key not in running else None,
              "browser": bool(getattr(module, "NEEDS_BROWSER", False))}
+        shown = s["broke_off"] or s["last"]
+        s["failures"] = [dict(r) for r in con.execute(
+            """SELECT reason, COUNT(*) AS n, MIN(url) AS example FROM failed_page WHERE run_id=?
+               GROUP BY reason ORDER BY n DESC LIMIT 3""", (shown["id"],))] if shown else []
         finished = dt.datetime.fromisoformat(last["finished"]) if last else None
         if s["running"]:
             s["state"], s["advice"] = "running", s["running"]["note"] or "starting"

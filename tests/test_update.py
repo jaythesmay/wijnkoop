@@ -160,3 +160,32 @@ def test_update_page(con, tmp_path, monkeypatch):
     assert len(launched) == 1
     assert "Going on now" in after.text and "Started: Gall &amp; Gall" in after.text
     assert 'http-equiv="refresh"' in after.text
+
+
+class Refusing(FakeClient):
+    """Every second wine page answers 403, as a shop that blocks a visitor would."""
+
+    def get(self, url):
+        import httpx
+
+        if url.endswith("100002.html"):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError("Client error '403 Forbidden' for url " + url, request=request,
+                                        response=httpx.Response(403, request=request))
+        return super().get(url)
+
+
+def test_failed_pages_keep_their_reason(con):
+    collect_gall(con=con, client=Refusing())
+    r = con.execute("SELECT pages_ok, pages_failed FROM run_log").fetchone()
+    assert (r["pages_ok"], r["pages_failed"]) == (2, 1)
+    s = _state(con, "gall", dt.datetime.now())
+    assert s["failures"] == [{"reason": "HTTP 403 Forbidden", "n": 1,
+                              "example": "https://www.gall.nl/wijn-b-wit-75cl-100002.html"}]
+
+
+def test_failure_reason_has_no_address():
+    from wijnkoop.collect import failure_reason
+
+    assert failure_reason(ValueError("could not convert 'abc' at https://x.nl/a")) == \
+        "ValueError: could not convert 'abc' at <page>"

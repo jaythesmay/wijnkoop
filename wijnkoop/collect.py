@@ -1,6 +1,8 @@
 """Store shop products in the database."""
 import datetime as dt
 import logging
+import re
+import sqlite3
 
 from . import db
 from .fetch import NotAllowed, PoliteClient
@@ -286,6 +288,16 @@ def _open_run(con, job: str, resume: bool):
     return run_id, None, 0, 0
 
 
+def failure_reason(exc: Exception) -> str:
+    """A short reason that is the same for every page failing the same way: no addresses."""
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None):
+        return f"HTTP {response.status_code} {getattr(response, 'reason_phrase', '') or ''}".strip()
+    text = str(exc).split("\n")[0]
+    text = re.sub(r"https?://\S+", "<page>", text)
+    return f"{type(exc).__name__}: {text}"[:200] if text else type(exc).__name__
+
+
 def make_client(shop):
     """A plain polite client, or a headless browser for shops that need one."""
     if getattr(shop, "NEEDS_BROWSER", False):
@@ -363,6 +375,13 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
             con.rollback()  # nothing half-saved from this page
             failed += 1
             log.warning("Failed %s: %s", url, exc)
+            # Keep the reason, so the app can show why pages failed without the container's log.
+            try:
+                con.execute("INSERT OR REPLACE INTO failed_page (run_id, url, reason, seen_on) VALUES (?,?,?,?)",
+                            (run_id, url, failure_reason(exc), today))
+                con.commit()
+            except sqlite3.Error:  # the database itself is the problem: the log has it
+                con.rollback()
         if i % 25 == 0:
             con.execute("UPDATE run_log SET pages_ok=?, pages_failed=?, note=? WHERE id=?",
                         (ok, failed, f"{i} of {total} pages read", run_id))

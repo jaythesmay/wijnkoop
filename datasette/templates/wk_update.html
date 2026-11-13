@@ -44,6 +44,7 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 <tr>
   <td><b>{{ s.name }}</b><div class="meta">{{ s.wines }} wine{{ 's' if s.wines != 1 }}{% if s.browser %} · headless browser{% endif %}</div></td>
   <td>{{ s.last_text }}{% if s.last %}<div class="meta">{{ s.last.pages_ok }} pages{% if s.last.pages_failed %}, {{ s.last.pages_failed }} failed{% endif %}</div>{% endif %}
+    {% for f in s.failures %}<div class="meta">{{ f.n }} failed: {{ f.reason }} (e.g. <a href="{{ f.example }}" target="_blank" rel="noopener">this page</a>)</div>{% endfor %}
     <div class="meta">{% if s.state == 'running' %}<span class="pill v-top">reading</span> {% elif s.state == 'queued' %}<span class="pill v-fair">waiting</span> {% endif %}{{ s.advice }}</div></td>
   <td class="num">
     {% if s.state in ('useful', 'fresh', 'soon') %}

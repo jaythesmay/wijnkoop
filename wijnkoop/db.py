@@ -182,6 +182,13 @@ CREATE TABLE IF NOT EXISTS skipped_page (
     seen_on TEXT,
     PRIMARY KEY (shop_id, shop_product_id)
 );
+CREATE TABLE IF NOT EXISTS failed_page (
+    run_id INTEGER NOT NULL REFERENCES run_log(id),
+    url TEXT NOT NULL,
+    reason TEXT,
+    seen_on TEXT,
+    PRIMARY KEY (run_id, url)
+);
 CREATE TABLE IF NOT EXISTS cuvee_alias (
     norm_key TEXT PRIMARY KEY,
     cuvee_id INTEGER NOT NULL REFERENCES cuvee(id),
