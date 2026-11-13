@@ -78,6 +78,10 @@ SHOPS = [
      "EUR 4.95 for orders of EUR 20 to 55, free from EUR 55 (confirmed by Loes, Nov 2026)."),
     ("Vindict", "https://www.vindict.nl", None, 30.0, None,
      "Free delivery from EUR 30 (vindict.nl, Nov 2026); the cost below that is not published."),
+    ("Henri Bloem", "https://henribloem.nl", None, 75.0, None,
+     "Free delivery in NL from EUR 75 (henribloem.nl, Nov 2026); the cost below that is not on the product pages."),
+    ("Okhuysen", "https://okhuysen.nl", None, 115.0, None,
+     "Free delivery from EUR 115 (okhuysen.nl, Nov 2026); the cost below that is not on the product pages."),
 ]
 
 
