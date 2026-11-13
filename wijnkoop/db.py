@@ -465,6 +465,7 @@ def _backup(con, path, version):
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
     "run_log": [("process", "TEXT")],
+    "award_upload": [("log", "TEXT")],
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
                     ("price_as_93", "REAL"), ("market_rank", "REAL"), ("best_for_price", "INTEGER DEFAULT 0")],

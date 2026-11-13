@@ -225,3 +225,73 @@ def test_download_kept_file(con, tmp_path):
     f, page, missing = asyncio.run(run())
     assert f.status_code == 200 and f.content == RESULTS and 'filename="mundus.txt"' in f.headers["content-disposition"]
     assert "download the file" in page.text and missing.status_code == 404
+
+
+def test_progress_and_detailed_report(con):
+    seen = []
+    r = upload.import_upload(con, "mundus.txt", RESULTS, today=TODAY,
+                             progress=lambda step, **d: seen.append((step, d)))
+    steps = list(dict.fromkeys(s for s, _ in seen))
+    assert steps == ["read", "find", "link", "scores", "report", "done"]
+    last_link = [d for s, d in seen if s == "link"][-1]
+    assert (last_link["done"], last_link["total"], last_link["linked"]) == (3, 3, 2)
+    log = r["upload"]["log"]
+    assert (log["records"], log["stored"], log["skipped"], log["linked"], log["not_linked"]) == (3, 3, 0, 2, 1)
+    assert (log["competition_from"], log["year_from"]) == ("the file", "the file")
+    twice = b"Wine;Medal\nBodegas Olarra Crianza 2021;Silver\nBodegas Olarra Crianza 2021;Silver\n"
+    again = upload.import_upload(con, "mv.csv", twice, competition="Mundus Vini", year=2025, today=TODAY)
+    assert (again["upload"]["log"]["skipped"], again["upload"]["log"]["year_from"]) == (1, "you")
+    assert [s["step"] for s in log["steps"]] == list(upload.STEPS.values())
+    assert upload.upload_report(con, r["upload"]["id"])["upload"]["log"]["linked"] == 2  # kept with the upload
+    rows = upload.report_rows(con, r["upload"]["id"])
+    assert len(rows) == 3 and all(len(x) == len(upload.REPORT_COLUMNS) for x in rows)
+    status = {x[1]: (x[7], x[12]) for x in rows}
+    assert status["Bodegas Olarra Crianza"] == ("linked", "confirmed")
+    assert status["Some Unknown Winery Tinto"] == ("not in your shops", "")
+
+
+def test_upload_page_shows_progress_and_offers_the_report(con, tmp_path):
+    from datasette.app import Datasette
+
+    con.close()
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                   template_dir=str(ROOT / "datasette" / "templates"))
+    from datasette.plugins import pm
+
+    ui = next(m for m in pm.get_plugins() if getattr(m, "__name__", "") == "wijnkoop_ui.py")
+    seen = []
+
+    async def run():
+        page = await ds.client.get("/upload")
+        token = re.search(r'"x-csrftoken": "([^"]+)"', page.text).group(1)
+        real = ui.award_upload.import_upload
+
+        def spy(*a):  # what the page would see halfway
+            def progress(step, **d):
+                a[-1](step, **d)
+                if step == "link":
+                    seen.append(ui._progress_text(ui.UPLOAD_PROGRESS["abc123def"]))
+            return real(*a[:-1], progress)
+
+        ui.award_upload.import_upload = spy
+        try:
+            r = await ds.client.post("/upload?filename=mundus.txt&job=abc123def", content=RESULTS,
+                                     headers={"x-csrftoken": token, "content-type": "application/octet-stream"},
+                                     cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")})
+        finally:
+            ui.award_upload.import_upload = real
+        after = await ds.client.get("/upload/progress?job=abc123def")
+        report = await ds.client.get(f"/upload/{r.json()['id']}")
+        csv_file = await ds.client.get(f"/upload/{r.json()['id']}/report.csv")
+        return after, report, csv_file
+
+    after, report, csv_file = asyncio.run(run())
+    now = seen[-1]["steps"]
+    assert [s["state"] for s in now] == ["done", "done", "now", "todo", "todo"]
+    assert "3 of 3" in now[2]["detail"] and "2 linked" in now[2]["detail"]
+    assert after.json() == {"step": None}  # forgotten once done
+    assert "Linked to a wine in your shops" in report.text and "report.csv" in report.text
+    assert "Time taken:" in report.text
+    lines = csv_file.text.lstrip("﻿").splitlines()
+    assert lines[0].startswith("producer;wine in the file;") and len(lines) == 4
+    assert "attachment" in csv_file.headers["content-disposition"]
