@@ -362,7 +362,12 @@ def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, 
     )
     con.commit()
     log.info("%s: finished, %d ok, %d failed", name, ok, failed)
+    from .awards.upload import relink_uploads
     from .scores import recompute
+
+    n = relink_uploads(con)
+    if n:
+        log.info("%s: %d awards from your uploaded results files now linked to new wines", name, n)
 
     recompute(con)
     return {"ok": ok, "failed": failed}
