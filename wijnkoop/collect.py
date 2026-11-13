@@ -4,6 +4,7 @@ import logging
 
 from . import db
 from .fetch import NotAllowed, PoliteClient
+from .bottles import fix_volume
 from .deals import effective_per_75cl, parse_deal
 from .normalize import cuvee_key, norm, wine_key
 from .reference import competition_id, parse_award_text
@@ -170,6 +171,7 @@ def _change_events(con, today, shop_id, offer_id, wine_id, current, p, stock):
 
 
 def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=None):
+    p.volume_cl = fix_volume(p.volume_cl, p.title, p.url)  # a half bottle or magnum named in the title
     vintage = _int(p.specs.get("vintage"))
     vkey = str(vintage) if vintage else "nv"
     cuvee_id = _resolve_cuvee(con, p, shop_id, matcher)

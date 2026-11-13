@@ -15,7 +15,7 @@ Made for a phone, in the shop as well as at home:
 | Page | What it is for |
 | --- | --- |
 | `/` Home | Gold-or-better wines with the best price for their score, deals on award winners, quick finds |
-| `/find` | Filters: price per bottle, colour, country, grape, minimum score, gold or better, deals |
+| `/find` | Filters: price per bottle (per 75 cl), colour, country, grape, minimum score, gold or better, deals |
 | `/search?q=` | Forgiving search on wine, producer and grape (spelling does not need to be exact) |
 | `/wine/<id>` | One wine: score, awards, shops, price history, other vintages, better value nearby |
 | `/week` | What changed in the last 7 days (the same as the Wednesday e-mail) |
@@ -33,6 +33,8 @@ The pages are a Datasette plugin (`datasette/plugins/wijnkoop_ui.py`) with templ
 price (one point per wine), so it knows what a score usually costs. Until 30 such wines are known it
 uses 35% more per point and €12 for a score of 89. The label compares that usual price with the
 price per bottle at 6: Top buy (pay two thirds or less), Good buy, Fair, Pricey for its score.
+Every price is per 75 cl, so a half bottle or a magnum compares fairly; the size comes from the
+shop, or from the name or address ("37,5cl", "halve fles", "Magnum") in `wijnkoop/bottles.py`.
 
 **Away from home.** Use Tailscale (free) on the NAS and the phone instead of opening a router
 port: install Tailscale from the QNAP App Center and on the phone, sign in with the same account,

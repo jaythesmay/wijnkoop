@@ -22,6 +22,10 @@
 </form>
 {%- endmacro %}
 
+{% macro m_unit(c) -%}
+{% if c.volume_cl|bottle_size %}per 75 cl at 6{% else %}per bottle at 6{% endif %}
+{%- endmacro %}
+
 {% macro card(c, show_actions=True) -%}
 <article class="card" id="o{{ c.offer_id }}">
   <div class="card-top">
@@ -33,7 +37,8 @@
   </div>
   <div class="price-row">
     <div class="price"><b>{{ c.price_per_bottle_at_6|money }}</b>
-      <small>per bottle at 6{% if c.normal_price and c.price_per_bottle_at_6 and c.normal_price - c.price_per_bottle_at_6 > 0.01 %} · normally {{ c.normal_price|money }}{% endif %}</small></div>
+      <small>{{ m_unit(c) }}{% if c.normal_price and c.price_per_bottle_at_6 and c.normal_price - c.price_per_bottle_at_6 > 0.01 %} · normally {{ c.normal_price|money }}{% endif %}</small>
+      {% if c.volume_cl|bottle_size %}<small class="size">{{ c.volume_cl|bottle_size|capitalize }}: {{ c.price_per_bottle_as_sold|money }}</small>{% endif %}</div>
     {% if c.verdict %}
     <div class="fair"><span class="pill v-{{ c.verdict|verdict_class }}">{{ c.verdict }}</span>
       <small>like a 93 for {{ c.price_as_93|money }} · cheaper than {{ c.cheaper_than_pct }}% of award wines</small></div>

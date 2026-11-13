@@ -19,6 +19,7 @@ import smtplib
 from email.message import EmailMessage
 
 from . import config
+from .bottles import bottle_size
 
 log = logging.getLogger("wijnkoop")
 
@@ -68,7 +69,7 @@ def overview(con, today: dt.date) -> list[tuple[str, list]]:
         rows = con.execute(
             f"""SELECT * FROM (
                   SELECT e.kind, e.wine_id, e.wine, e.vintage, e.shop, e.old_value, e.new_value, e.score, e.url,
-                         b.price_per_bottle_at_6, b.promotion, b.value, COALESCE(b.deal, 'no') AS deal,
+                         b.price_per_bottle_at_6, b.price_per_bottle_as_sold, b.volume_cl, b.promotion, b.value, COALESCE(b.deal, 'no') AS deal,
                          b.best_award, b.verdict, b.fair_price, e.happened_on
                   FROM weekly_events e LEFT JOIN best_buys b ON b.url = e.url
                   WHERE e.happened_on > ?)
@@ -112,7 +113,11 @@ def render(sections, today: dt.date, app_url: str = "") -> tuple[str, str]:
                 detail.append(r["promotion"])
             price = _money(r["price_per_bottle_at_6"])
             score = f"{r['score']:g}" if r["score"] else ""
-            text.append(f"* {name} ({r['shop']}) score {score}, {price} per bottle at 6. "
+            size = bottle_size(r["volume_cl"])
+            if size:
+                detail.append(f"{size}: {_money(r['price_per_bottle_as_sold'])}")
+            unit = "per 75 cl" if size else "per bottle"
+            text.append(f"* {name} ({r['shop']}) score {score}, {price} {unit} at 6. "
                         f"{'; '.join(detail)}\n  {r['url']}")
             parts.append(
                 "<tr>"

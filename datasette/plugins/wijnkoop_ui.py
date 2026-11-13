@@ -11,6 +11,7 @@ from datasette.utils.asgi import Response
 from markupsafe import Markup
 
 from wijnkoop import ui
+from wijnkoop.bottles import bottle_size
 from wijnkoop.awards import upload as award_upload
 
 DB = "wijnkoop"
@@ -239,6 +240,7 @@ def _verdict_class(verdict):
 @hookimpl
 def prepare_jinja2_environment(env):
     env.filters["money"] = ui.money
+    env.filters["bottle_size"] = bottle_size
     env.filters["score"] = lambda s: f"{s:.1f}".rstrip("0").rstrip(".") if s is not None else "–"
     env.filters["verdict_class"] = _verdict_class
     env.filters["country"] = ui.country_en
