@@ -157,6 +157,57 @@ def cmd_mail_setup(args):
     con.close()
 
 
+def cmd_vivino_setup(args):
+    import getpass
+
+    from . import vivino
+
+    if args.forget:
+        if vivino.SETTINGS.exists():
+            vivino.SETTINGS.unlink()
+        con = db.connect()
+        con.execute("DELETE FROM vivino_rating")
+        con.commit()
+        print("Brave key and all stored Vivino ratings deleted.")
+        return
+    print("Vivino ratings via the Brave Search API. Make a key at https://api-dashboard.search.brave.com")
+    print(f"WijnKoop uses at most {vivino.MONTHLY_LIMIT} searches a month.")
+    key = getpass.getpass("Brave API key (not shown while typing): ").strip()
+    if not key:
+        print("No key given; nothing saved.")
+        return
+    vivino.save_key(key)
+    print(f"Saved in {vivino.SETTINGS}. Test it with: python -m wijnkoop vivino-test")
+
+
+def cmd_vivino_test(args):
+    from . import vivino
+
+    key = vivino.load_key()
+    if not key:
+        print("No Brave key yet. Run: python -m wijnkoop vivino-setup")
+        return
+    con = db.connect()
+    ids = vivino.wines_to_test(con, args.count)
+    found = 0
+    for wine_id in ids:
+        try:
+            r = vivino.look_up(con, key, wine_id)
+        except Exception as exc:  # show the reason (wrong key, limit) and stop
+            print(f"Stopped: {exc}")
+            break
+        if r["rating"]:
+            found += 1
+            print(f"  {r['wine']}: {r['rating']:.1f} stars ({r['ratings_count'] or '?'} ratings, {r['how']})"
+                  f"  <- {r['vivino_title']}")
+        else:
+            print(f"  {r['wine']}: no rating ({r['how']}, best match {r['match_score']:.0f})")
+        time.sleep(1.1)
+    print(f"{found} of {len(ids)} wines got a Vivino rating. "
+          f"Searches this month: {vivino.searches_this_month(con)} of {vivino.MONTHLY_LIMIT}.")
+    con.close()
+
+
 def cmd_mail(args):
     con = db.connect()
     print(send_overview(con))
@@ -196,6 +247,12 @@ def main(argv=None):
     p.add_argument("--match-only", action="store_true", help="only redo the linking to wines")
     p.set_defaults(func=cmd_awards)
     sub.add_parser("mail-setup", help="set up the weekly e-mail and send a test").set_defaults(func=cmd_mail_setup)
+    p = sub.add_parser("vivino-setup", help="save a Brave Search API key for Vivino ratings")
+    p.add_argument("--forget", action="store_true", help="delete the key and every stored Vivino rating")
+    p.set_defaults(func=cmd_vivino_setup)
+    p = sub.add_parser("vivino-test", help="look up Vivino ratings of the best-scored wines (test)")
+    p.add_argument("--count", type=int, default=10)
+    p.set_defaults(func=cmd_vivino_test)
     sub.add_parser("mail", help="send the weekly overview e-mail now").set_defaults(func=cmd_mail)
     sub.add_parser("scheduler", help="run the weekly schedule forever").set_defaults(func=cmd_scheduler)
     args = parser.parse_args(argv)

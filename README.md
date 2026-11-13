@@ -68,6 +68,8 @@ and open `http://<nas tailscale name>:8001`.
 | `python -m wijnkoop awards` | Reads IWC and Concours Mondial results now and links them to the shop wines |
 | `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
 | `python -m wijnkoop mail-setup` | Sets up the weekly e-mail (Gmail app password, stored only in `/data/mail.ini`) and sends a test |
+| `python -m wijnkoop vivino-setup` | Saves a Brave Search API key (only in `/data/brave.ini`) for the Vivino test; `--forget` deletes the key and every stored Vivino rating |
+| `python -m wijnkoop vivino-test --count 10` | Looks up the Vivino rating of the 10 best-scored wines via Brave (never opens vivino.com; at most 900 searches a month) |
 | `python -m wijnkoop mail` | Sends the weekly overview e-mail now |
 | `python -m wijnkoop scores` | Recomputes scores, value and deals (also done after every run) |
 
