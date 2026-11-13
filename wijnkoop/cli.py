@@ -7,9 +7,8 @@ import time
 
 from . import config, db, scores
 from .awards.importer import awards_due, match_awards, run_award_import
-from .collect import collect_shop
+from .collect import collect_shop, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
-from .fetch import PoliteClient
 from .shops import SHOPS, gall
 
 
@@ -34,7 +33,7 @@ def cmd_collect(args):
 def cmd_check(args):
     """Fetch a few wine pages of one shop, print what was understood, save the raw HTML."""
     shop = SHOPS[args.shop]
-    client = PoliteClient(shop.BASE)
+    client = make_client(shop)
     wine_urls = [u for u, _ in shop.list_products(client)][: args.count]
     config.SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     for url in wine_urls:
