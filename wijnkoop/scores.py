@@ -5,8 +5,14 @@ overall  = (sum(w * s) + K * M) / (sum(w) + K)   K = 0.5, M = 88
            w = competition weight (1.0 / 0.7 / 0.4).
 track    = awards of OTHER vintages of the same wine, and of the producer's other wines.
            Shown next to the score, never mixed into it.
-value    = overall - expected(price), expected(p) = a + b * ln(p), fitted on all wines
-           with award evidence (falls back to a = 80, b = 3 with too few wines).
+fair     = the price a wine of this score usually costs: ln(fair) = c + d * score, fitted
+           on all priced wines with award evidence (one point = e^d - 1 more money; until
+           30 wines are known, 35% per point and EUR 12 for a score of 89). d is kept
+           between 15% and 50% per point so a few odd wines cannot run away with it.
+price-quality = fair / price per bottle at 6: 1.5 = you pay two thirds of what this
+           quality usually costs. Verdict: >= 1.5 Top buy, >= 1.15 Good buy, >= 0.87 Fair,
+           below that Pricey for its score.
+value    = the same in points: score minus the score that this price usually buys.
 deal     = price per bottle at 6 bottles at least 15% below this offer's own 90-day
            median, or below the cheapest other shop. Until 90 days of history exist,
            the normal (non-promotion) price is the reference.
@@ -23,7 +29,13 @@ K = 0.5
 M = 88.0
 DEAL_DROP = 0.15
 HISTORY_DAYS = 90
-DEFAULT_FIT = (80.0, 3.0)
+DEFAULT_PER_POINT = 0.35
+DEFAULT_ANCHOR = (89.0, 12.0)  # score 89 usually costs EUR 12 per bottle
+PER_POINT_RANGE = (0.15, 0.50)
+MIN_FIT_WINES = 30
+VERDICTS = [(1.5, "Top buy"), (1.15, "Good buy"), (0.87, "Fair"), (0.0, "Pricey for its score")]
+GOLD_MEDALS = ("Gold", "Grand Gold", "Platinum", "Trophy")
+GOLD_CRITIC_POINTS = 93
 
 
 def overall(scored: list[tuple[float, float]]) -> float | None:
@@ -34,24 +46,38 @@ def overall(scored: list[tuple[float, float]]) -> float | None:
     return round((sum(s * w for s, w in scored) + K * M) / (sw + K), 1)
 
 
-def fit_expected(points: list[tuple[float, float]]) -> tuple[float, float]:
-    """Least squares fit of score = a + b * ln(price). points: [(price, score)]"""
-    pts = [(math.log(p), s) for p, s in points if p and p > 0]
-    if len(pts) < 20:
-        return DEFAULT_FIT
+def fit_price(points: list[tuple[float, float]]) -> tuple[float, float, int]:
+    """Least squares fit of ln(price) = c + d * score. points: [(price, score)], one per wine.
+    Returns (c, d, number of wines used); defaults when there are too few."""
+    pts = [(sc, math.log(p)) for p, sc in points if p and p > 0 and sc]
+    d0 = math.log(1 + DEFAULT_PER_POINT)
+    default = (math.log(DEFAULT_ANCHOR[1]) - d0 * DEFAULT_ANCHOR[0], d0, 0)
+    if len(pts) < MIN_FIT_WINES:
+        return default
     mx = sum(x for x, _ in pts) / len(pts)
     my = sum(y for _, y in pts) / len(pts)
     sxx = sum((x - mx) ** 2 for x, _ in pts)
     if sxx == 0:
-        return DEFAULT_FIT
-    b = sum((x - mx) * (y - my) for x, y in pts) / sxx
-    return my - b * mx, b
+        return default
+    d = sum((x - mx) * (y - my) for x, y in pts) / sxx
+    d = min(max(d, math.log(1 + PER_POINT_RANGE[0])), math.log(1 + PER_POINT_RANGE[1]))
+    return my - d * mx, d, len(pts)
+
+
+def fair_price(score: float, c: float, d: float) -> float:
+    return math.exp(c + d * score)
+
+
+def verdict(ratio: float | None) -> str | None:
+    if ratio is None:
+        return None
+    return next(name for limit, name in VERDICTS if ratio >= limit)
 
 
 def _wine_scores(con, now):
     rows = con.execute(
         """SELECT m.wine_id, w.cuvee_id, c.producer_key, a.medal, a.points, a.raw_text,
-                  comp.short, comp.weight, a.year
+                  comp.short, comp.weight, comp.kind, a.year
            FROM award_match m
            JOIN award a ON a.id = m.award_id
            JOIN competition comp ON comp.id = a.competition_id
@@ -60,6 +86,7 @@ def _wine_scores(con, now):
            WHERE COALESCE(m.confirmed, 1) = 1"""
     ).fetchall()
     per_wine = defaultdict(list)
+    gold = set()
     info = {}
     for r in rows:
         s = award_score(r["medal"], r["points"], r["short"])
@@ -69,6 +96,9 @@ def _wine_scores(con, now):
         label = " ".join(str(x) for x in (r["short"], r["year"], r["medal"],
                                           f"{r['points']:g} pts" if r["points"] else None) if x)
         per_wine[r["wine_id"]].append((s, r["weight"] or 0.4, label))
+        if (r["kind"] == "critic" and (r["points"] or 0) >= GOLD_CRITIC_POINTS) or (
+                r["kind"] != "critic" and r["medal"] in GOLD_MEDALS):
+            gold.add(r["wine_id"])
 
     wine_overall = {w: overall([(s, wt) for s, wt, _ in v]) for w, v in per_wine.items()}
     by_cuvee = defaultdict(dict)
@@ -95,11 +125,12 @@ def _wine_scores(con, now):
         best = max(mine, key=lambda x: x[0])[2] if mine else None
         con.execute(
             """INSERT INTO wine_score (wine_id, n_awards, evidence, overall, best_award, cuvee_vintages,
-                                       cuvee_avg, producer_wines, producer_avg, updated)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                                       cuvee_avg, producer_wines, producer_avg, updated, gold)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (w["id"], len(mine), round(sum(x[1] for x in mine), 2), wine_overall.get(w["id"]), best,
              len(other_vintages), round(statistics.mean(other_vintages), 1) if other_vintages else None,
-             len(other_wines), round(statistics.mean(other_wines), 1) if other_wines else None, now),
+             len(other_wines), round(statistics.mean(other_wines), 1) if other_wines else None, now,
+             int(w["id"] in gold)),
         )
     return wine_overall
 
@@ -142,12 +173,18 @@ def recompute(con, today: dt.date | None = None):
         if o["effective_price_per_75cl"] and o["in_stock_online"] != 0:
             cheapest[o["wine_id"]].append((o["effective_price_per_75cl"], o["shop_id"]))
 
-    fit_points = []
+    cheapest_per_wine = {}
     for o in offers:
         s = wine_overall.get(o["wine_id"])
-        if s and o["effective_price_per_75cl"]:
-            fit_points.append((o["effective_price_per_75cl"], s))
-    a, b = fit_expected(fit_points)
+        eff = o["effective_price_per_75cl"]
+        if s and eff and (o["wine_id"] not in cheapest_per_wine or eff < cheapest_per_wine[o["wine_id"]][0]):
+            cheapest_per_wine[o["wine_id"]] = (eff, s)
+    c, d, n_fit = fit_price(list(cheapest_per_wine.values()))
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('price_per_point_pct', ?)",
+                (str(round(100 * (math.exp(d) - 1))),))
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('price_fit_wines', ?)", (str(n_fit),))
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('price_fit', ?)",
+                (f"{c:.6f} {d:.6f}",))
 
     con.execute("DELETE FROM offer_score")
     for o in offers:
@@ -167,13 +204,18 @@ def recompute(con, today: dt.date | None = None):
         if others and eff < min(others):
             reasons.append("cheapest shop")
         score = wine_overall.get(o["wine_id"])
-        value = round(score - (a + b * math.log(eff)), 1) if score else None
+        fair = ratio = value = None
+        if score:
+            fair = round(fair_price(score, c, d) * (o["volume_cl"] or 75) / 75, 2)
+            ratio = round(fair / bottle, 2)
+            value = round(score - (math.log(eff) - c) / d, 1)
         con.execute(
             """INSERT INTO offer_score (offer_id, bottle_price_at_6, order_of_6, delivery_at_6, reference_price,
-                                        is_deal, deal_reason, value, updated)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                                        is_deal, deal_reason, value, fair_price, price_quality, verdict, updated)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (o["id"], bottle, total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
-             value, now),
+             value, fair, ratio, verdict(ratio), now),
         )
     con.commit()
-    return {"wines_scored": len(wine_overall), "fit": (round(a, 2), round(b, 2))}
+    return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),
+            "fit_wines": n_fit}

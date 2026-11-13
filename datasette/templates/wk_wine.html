@@ -1,0 +1,83 @@
+{% extends "wk_base.html" %}
+{% import "wk_macros.html" as m with context %}
+{% block content %}
+{% set w = wine %}
+<h1>{{ w.name }}{% if w.vintage %} {{ w.vintage }}{% endif %}</h1>
+<p class="lead">{{ [w.producer, w.colour|capitalize if w.colour, w.country|country, w.region]|select|join(' · ') }}{% if w.grapes %}<br>{{ w.grapes }}{% endif %}{% if w.alcohol %} · {{ w.alcohol|score }}%{% endif %}</p>
+
+<div class="big-score">
+  {{ m.score_badge(w.score, w.gold) }}
+  <div>
+    {% if w.score %}
+    <b>Score {{ w.score|score }}</b> from {{ awards|selectattr('confirmed', 'ne', 0)|list|length }} award{{ 's' if awards|selectattr('confirmed', 'ne', 0)|list|length != 1 }}{% if w.gold %}, gold or better{% endif %}.
+    {% else %}<b>No score yet.</b> No silver-or-better award or critic score is known for this vintage.{% endif %}
+    {% if w.cuvee_vintages %}<br><span class="small">Other vintages: {{ w.cuvee_vintages }} with awards, average {{ w.cuvee_avg|score }}.</span>{% endif %}
+    {% if w.producer_wines %}<br><span class="small">Producer's other wines: {{ w.producer_wines }} with awards, average {{ w.producer_avg|score }}.</span>{% endif %}
+  </div>
+</div>
+<div class="actions" style="margin-bottom:8px">{{ m.watch_button(w.id, watched) }}</div>
+
+<h2>Where to buy</h2>
+{% if offers %}
+<div class="cards">
+{% for o in offers %}
+<article class="card" id="o{{ o.offer_id }}">
+  <div class="price-row" style="margin-top:0">
+    <div class="price"><b>{{ o.price_per_bottle_at_6|money }}</b>
+      <small>per bottle at 6 at {{ o.shop }}{% if o.normal_price and o.normal_price - o.price_per_bottle_at_6 > 0.01 %} · normally {{ o.normal_price|money }}{% endif %}</small></div>
+    {% if o.verdict %}<div class="fair"><span class="pill v-{{ o.verdict|verdict_class }}">{{ o.verdict }}</span>
+      <small>this score usually costs {{ o.fair_price|money }}</small></div>{% endif %}
+  </div>
+  <div class="tags">
+    {% if o.promotion %}<span class="tag promo">{{ o.promotion }}</span>{% endif %}
+    {% for t in o.tags if t not in ('Gold or better',) %}<span class="tag {{ {'Deal': 'deal', 'Out of stock online': 'stock'}.get(t, '') }}">{{ t }}{% if t == 'Deal' and o.deal_reason %}: {{ o.deal_reason }}{% endif %}</span>{% endfor %}
+    {% if o.member_price %}<span class="tag">Member price {{ o.member_price|money }}</span>{% endif %}
+  </div>
+  <div class="actions">
+    {{ m.order_button(o.offer_id, o.in_order, 6, '#o' ~ o.offer_id) }}
+    {% if not o.in_order %}{{ m.order_button(o.offer_id, 0, 1, '#o' ~ o.offer_id) }}{% endif %}
+    {% if o.url %}<a class="shoplink" href="{{ o.url }}" target="_blank" rel="noopener">Open at {{ o.shop }} ↗</a>{% endif %}
+  </div>
+</article>
+{% endfor %}
+</div>
+{% else %}<div class="empty">Not for sale in a tracked shop right now.</div>{% endif %}
+
+{% if history %}
+<h2>Price history</h2>
+{% for h in history %}
+<div class="panel" style="margin-bottom:10px">
+  <div class="small muted">{{ h.shop }}, per bottle at 6, {{ h.first }} to {{ h.last }} · low {{ h.low|money }}, high {{ h.high|money }}</div>
+  {% if h.low == h.high %}<p>The price has not changed.</p>{% else %}
+  <svg class="spark" viewBox="0 0 {{ h.width }} {{ h.height }}" role="img" aria-label="Price history at {{ h.shop }}"><path d="{{ h.path }}"/><circle cx="{{ h.end[0] }}" cy="{{ h.end[1] }}" r="3.5"/></svg>{% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+<h2>Awards</h2>
+{% if awards %}
+<div class="panel"><table class="list">
+<tr><th>Award</th><th class="num">Score</th></tr>
+{% for a in awards %}
+<tr>
+  <td><b>{{ a.short }}</b> {{ a.year or '' }} {{ a.medal or '' }}{% if a.points %} {{ a.points|score }} pts{% endif %}
+    <div class="meta">{{ a.competition }} · counts {{ (a.weight * 100)|round|int }}%{% if a.confirmed == 0 %} · <i>not confirmed, not counted</i>{% endif %}{% if a.source_url %} · <a href="{{ a.source_url }}" target="_blank" rel="noopener">source</a>{% endif %}</div></td>
+  <td class="num">{% if a.medal in ('Bronze', 'Commended') %}<span class="muted small">not counted</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% else %}<div class="empty">No awards known for this vintage.</div>{% endif %}
+
+{% if other_vintages %}
+<h2>Other vintages</h2>
+<div class="panel"><table class="list">
+{% for v in other_vintages %}<tr><td><a href="/wine/{{ v.id }}">{{ v.vintage or 'No vintage' }}</a><div class="meta">{{ v.best_award or '' }}</div></td><td class="num"><b>{{ v.score|score }}</b></td></tr>{% endfor %}
+</table></div>
+{% endif %}
+
+{% if better %}
+<h2>Better value at a similar price</h2>
+<p class="lead">Same colour, within 25% of this price, and a better price for their score.</p>
+{{ m.cards(better) }}
+{% endif %}
+{% endblock %}

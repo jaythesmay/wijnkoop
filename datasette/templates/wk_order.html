@@ -1,0 +1,49 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Order list</h1>
+{% if not shops %}
+<div class="empty">Your order list is empty. Tap “+ 6 to order” on a wine to start one.</div>
+{% endif %}
+{% for s in shops %}
+<h2>{{ s.shop }}</h2>
+<div class="panel">
+<table class="list">
+<tr><th>Wine</th><th class="num">Bottles</th><th class="num">Cost</th></tr>
+{% for ln in s.lines %}
+<tr>
+  <td><a href="/wine/{{ ln.wine_id }}">{{ ln.wine }}{% if ln.vintage %} {{ ln.vintage }}{% endif %}</a>
+    <div class="meta">{{ ln.price|money }} each{% if ln.promotion %} · {{ ln.promotion }}{% endif %}{% if ln.online_in_stock == 'no' %} · <b>out of stock online</b>{% endif %}</div>
+    {% if ln.promo_needs %}<div class="small" style="color:var(--accent)">Take {{ ln.promo_needs }} for the promotion.</div>{% endif %}
+    {% if ln.url %}<a class="small" href="{{ ln.url }}" target="_blank" rel="noopener">Open at {{ s.shop }} ↗</a>{% endif %}
+  </td>
+  <td class="num">
+    <form method="post" action="/order" style="display:flex;gap:4px;justify-content:flex-end">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="offer_id" value="{{ ln.offer_id }}">
+      <input type="number" name="qty" value="{{ ln.qty }}" min="0" max="99" inputmode="numeric" style="width:64px" aria-label="Bottles" onchange="this.form.submit()">
+      <noscript><button type="submit">Set</button></noscript>
+    </form>
+  </td>
+  <td class="num">{{ ln.cost|money }}{% if ln.normal - ln.cost > 0.009 %}<div class="meta">was {{ ln.normal|money }}</div>{% endif %}</td>
+</tr>
+{% endfor %}
+<tr><td>Wine</td><td class="num">{{ s.bottles }}</td><td class="num">{{ s.goods|money }}</td></tr>
+<tr><td>Delivery</td><td></td><td class="num">{{ 'free' if not s.delivery else s.delivery|money }}</td></tr>
+<tr><td><b>Total</b></td><td></td><td class="num"><b>{{ s.total|money }}</b></td></tr>
+</table>
+{% if s.saved > 0 %}<div class="hint ok">You save {{ s.saved|money }} with the promotions.</div>{% endif %}
+{% if s.to_free_delivery %}<div class="hint">Add {{ s.to_free_delivery|money }} more for free delivery (saves {{ s.delivery|money }}).</div>{% endif %}
+{% if s.below_minimum %}<div class="hint">Below this shop's minimum order of {{ s.min_order|money }}.</div>{% endif %}
+{% if s.bottles_short %}<div class="hint">{{ s.bottles_short }} more bottle{{ 's' if s.bottles_short != 1 }} to reach 6. The prices on the cards assume 6 bottles.</div>{% endif %}
+{% if s.website %}<p><a class="btn primary" href="{{ s.website }}" target="_blank" rel="noopener">Go to {{ s.shop }} ↗</a></p>{% endif %}
+</div>
+{% endfor %}
+{% if shops %}
+<form method="post" action="/order" style="margin-top:18px" onsubmit="return confirm('Empty the whole order list?')">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="clear" value="1">
+  <button type="submit">Empty the order list</button>
+</form>
+<p class="small muted">Promotions are worked out the way the shop describes them; the shop's own basket has the final word.</p>
+{% endif %}
+{% endblock %}

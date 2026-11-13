@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#7b1e3a">
+<title>{{ title }}</title>
+<style>
+:root {
+  --bg: #f8f5f3; --surface: #ffffff; --text: #231b1e; --muted: #6e6367; --line: #e7dfe1;
+  --accent: #7b1e3a; --accent-soft: #f4e6ea; --on-accent: #ffffff;
+  --gold: #8a6100; --gold-bg: #f8edcc; --gold-line: #e2c46c;
+  --top: #1d6b40; --top-bg: #dcf0e3; --good: #2c6a8a; --good-bg: #dfedf5;
+  --fair: #5f5a52; --fair-bg: #ece9e3; --pricey: #9a3b16; --pricey-bg: #f8e2d8;
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141012; --surface: #1f191b; --text: #f2ebed; --muted: #aa9fa3; --line: #3a3034;
+    --accent: #e0698c; --accent-soft: #3a2029; --on-accent: #1a0d12;
+    --gold: #f0c75a; --gold-bg: #3a2f14; --gold-line: #7d6420;
+    --top: #7fd6a2; --top-bg: #183626; --good: #8cc7e6; --good-bg: #172d3a;
+    --fair: #cfc9bf; --fair-bg: #2e2b27; --pricey: #f2a07d; --pricey-bg: #3d2119;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--accent); }
+header.top { position: sticky; top: 0; z-index: 5; background: var(--accent); color: var(--on-accent); }
+.bar { max-width: 760px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 10px; align-items: center; }
+.brand { color: var(--on-accent); text-decoration: none; font-weight: 700; font-size: 18px; letter-spacing: .2px; }
+.bar form { flex: 1; display: flex; }
+.bar input[type=search] { flex: 1; min-width: 0; border: 0; border-radius: 10px; padding: 9px 12px; font-size: 16px;
+  background: rgba(255,255,255,.95); color: #231b1e; }
+nav.tabs { max-width: 760px; margin: 0 auto; display: flex; justify-content: space-between; overflow-x: auto; padding: 0 6px; }
+nav.tabs a { color: var(--on-accent); opacity: .82; text-decoration: none; padding: 8px 8px 10px; white-space: nowrap;
+  font-size: 15px; border-bottom: 3px solid transparent; }
+nav.tabs a.on { opacity: 1; border-bottom-color: var(--on-accent); font-weight: 600; }
+.count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 3px; border-radius: 10px; font-size: 12px;
+  line-height: 18px; text-align: center; background: var(--on-accent); color: var(--accent); font-weight: 700; }
+main { max-width: 760px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 24px; line-height: 1.2; margin: 4px 0 12px; }
+h2 { font-size: 18px; margin: 26px 0 10px; }
+.muted { color: var(--muted); }
+small, .small { font-size: 13px; }
+.lead { color: var(--muted); margin: -4px 0 16px; }
+.cards { display: grid; gap: 12px; }
+@media (min-width: 700px) { .cards.two { grid-template-columns: 1fr 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; scroll-margin-top: 120px; }
+.card-top { display: flex; gap: 12px; align-items: flex-start; }
+.score { flex: none; width: 62px; height: 62px; border-radius: 12px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent); }
+.score b { font-size: 21px; line-height: 1; }
+.score span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; margin-top: 3px; }
+.score.gold { background: var(--gold-bg); color: var(--gold); box-shadow: inset 0 0 0 1.5px var(--gold-line); }
+.score.none { background: var(--fair-bg); color: var(--muted); }
+.title { min-width: 0; }
+.title a.name { color: var(--text); font-weight: 650; text-decoration: none; font-size: 16.5px; }
+.title a.name:hover { text-decoration: underline; }
+.meta { color: var(--muted); font-size: 13.5px; }
+.price-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.price b { font-size: 22px; }
+.price small, .fair small { display: block; color: var(--muted); }
+.fair { text-align: right; margin-left: auto; }
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.v-top { background: var(--top-bg); color: var(--top); }
+.v-good { background: var(--good-bg); color: var(--good); }
+.v-fair { background: var(--fair-bg); color: var(--fair); }
+.v-pricey { background: var(--pricey-bg); color: var(--pricey); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.tag { font-size: 12.5px; border-radius: 999px; padding: 2px 9px; background: var(--fair-bg); color: var(--fair); }
+.tag.deal, .tag.promo { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.tag.gold { background: var(--gold-bg); color: var(--gold); font-weight: 600; }
+.tag.stock { background: var(--pricey-bg); color: var(--pricey); }
+.award { margin-top: 8px; font-size: 13.5px; }
+.actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+.actions form { margin: 0; }
+button, .btn { font: inherit; font-size: 14.5px; border-radius: 10px; padding: 8px 12px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--text); cursor: pointer; text-decoration: none; display: inline-block; min-height: 40px; }
+button.primary, .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+button.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+.actions .shoplink { margin-left: auto; font-size: 14px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 4px; }
+.chip { border: 1px solid var(--line); background: var(--surface); color: var(--text); text-decoration: none;
+  border-radius: 999px; padding: 7px 13px; font-size: 14.5px; }
+.chip.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 4px 0 6px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px; text-align: center; text-decoration: none; color: var(--text); }
+.stat b { display: block; font-size: 22px; }
+.stat span { font-size: 12.5px; color: var(--muted); }
+form.filters { display: grid; gap: 12px; }
+form.filters label { display: block; font-size: 13.5px; color: var(--muted); margin-bottom: 4px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+input[type=number], input[type=text], select { width: 100%; font: inherit; font-size: 16px; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.checks label { color: var(--text) !important; font-size: 15px !important; display: flex !important; gap: 6px; align-items: center; margin: 0 !important; }
+.checks input { width: 18px; height: 18px; accent-color: var(--accent); }
+details.box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 12px 0; }
+details.box summary { cursor: pointer; font-weight: 600; }
+table.list { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+table.list td, table.list th { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.list th { font-size: 12.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .3px; }
+.num { text-align: right !important; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hint { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 8px 12px; border-radius: 6px; margin: 10px 0; font-size: 14.5px; }
+.hint.ok { border-color: var(--top); background: var(--top-bg); }
+.big-score { display: flex; gap: 14px; align-items: center; margin: 6px 0 14px; }
+.big-score .score { width: 74px; height: 74px; }
+.big-score .score b { font-size: 27px; }
+svg.spark { width: 100%; height: auto; max-width: 420px; display: block; }
+svg.spark path { fill: none; stroke: var(--accent); stroke-width: 2; }
+svg.spark circle { fill: var(--accent); }
+.empty { color: var(--muted); padding: 18px; text-align: center; background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius); }
+footer { max-width: 760px; margin: 24px auto 40px; padding: 0 16px; color: var(--muted); font-size: 13px; }
+footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <a class="brand" href="/">WijnKoop</a>
+    <form action="/search" role="search"><input type="search" name="q" value="{{ q or '' }}" placeholder="Search a wine, producer or grape" aria-label="Search"></form>
+  </div>
+  {% set p = path %}
+  <nav class="tabs">
+    <a href="/" class="{{ 'on' if p == '/' }}">Home</a>
+    <a href="/find" class="{{ 'on' if p == '/find' }}">Find</a>
+    <a href="/week" class="{{ 'on' if p == '/week' }}">Week</a>
+    <a href="/watchlist" class="{{ 'on' if p == '/watchlist' }}">Watchlist<span class="count" id="nav-watch"{% if not nav.watched %} hidden{% endif %}>{{ nav.watched }}</span></a>
+    <a href="/order" class="{{ 'on' if p == '/order' }}">Order<span class="count" id="nav-order"{% if not nav.order_bottles %} hidden{% endif %}>{{ nav.order_bottles }}</span></a>
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>
+  <a href="/how">How the scores work</a> · <a href="/wijnkoop">Expert tables</a> · <a href="/wijnkoop/run_log">Update log</a><br>
+  App version {{ version }}
+</footer>
+<script>
+// Watch and add-to-order buttons work without reloading the page.
+document.addEventListener("submit", async (ev) => {
+  const form = ev.target;
+  if (!form.matches("form[data-quick]")) return;
+  ev.preventDefault();
+  const btn = form.querySelector("button");
+  btn.disabled = true;
+  try {
+    const r = await fetch(form.action, {method: "POST", body: new URLSearchParams(new FormData(form)), headers: {"x-wk-quick": "1"}, credentials: "same-origin"});
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    if ("watched" in d) {
+      btn.textContent = d.watched ? "★ Watching" : "☆ Watch";
+      btn.classList.toggle("on", d.watched);
+    }
+    if ("qty" in d) {
+      btn.textContent = "✓ " + d.qty + " in order";
+      btn.classList.add("on");
+    }
+    for (const [id, n] of [["nav-watch", d.nav.watched], ["nav-order", d.nav.order_bottles]]) {
+      const el = document.getElementById(id);
+      el.textContent = n; el.hidden = !n;
+    }
+  } catch (e) { form.submit(); }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>

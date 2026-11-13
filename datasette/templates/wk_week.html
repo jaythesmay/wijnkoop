@@ -1,0 +1,25 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>This week</h1>
+<p class="lead">What changed in the last 7 days among wines with a score. The same list goes out by e-mail on Wednesday.</p>
+{% for s in sections %}
+<h2>{{ s.title }}</h2>
+<div class="panel">
+<table class="list">
+{% for r in s.rows %}
+<tr>
+  <td>{% if r.wine_id %}<a href="/wine/{{ r.wine_id }}">{{ r.wine }}{% if r.vintage %} {{ r.vintage }}{% endif %}</a>{% else %}{{ r.wine }}{% endif %}
+    <div class="meta">{{ r.shop }}{% if r.kind == 'new_award' and r.new_value %} · {{ r.new_value }}{% elif r.best_award %} · {{ r.best_award }}{% endif %}{% if r.kind == 'price_drop' and r.old_value %} · was {{ r.old_value|float|money }}{% endif %}{% if r.promotion %} · {{ r.promotion }}{% endif %}</div>
+    {% if r.verdict %}<span class="pill v-{{ r.verdict|verdict_class }}" style="margin-top:4px">{{ r.verdict }}</span>{% endif %}
+  </td>
+  <td class="num"><b>{{ r.score|score if r.score else '' }}</b></td>
+  <td class="num">{{ r.price_per_bottle_at_6|money }}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% else %}
+<div class="empty">Nothing new among the wines with a score this week.</div>
+{% endfor %}
+<p class="small muted" style="margin-top:16px">All changes, including wines without a score: <a href="/wijnkoop/weekly_overview">full weekly list</a>.</p>
+{% endblock %}

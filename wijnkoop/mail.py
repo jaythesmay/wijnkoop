@@ -23,6 +23,7 @@ from . import config
 log = logging.getLogger("wijnkoop")
 
 SECTIONS = [
+    ("On your watchlist", "wine_id IN (SELECT wine_id FROM watch)"),
     ("New awards for wines in the shop", "kind = 'new_award'"),
     ("Deals on award-winning wines", "kind IN ('promotion_start', 'price_drop', 'new_offer', 'back') "
                                      "AND score IS NOT NULL AND deal = 'yes'"),
@@ -66,9 +67,9 @@ def overview(con, today: dt.date) -> list[tuple[str, list]]:
     for title, where in SECTIONS:
         rows = con.execute(
             f"""SELECT * FROM (
-                  SELECT e.kind, e.wine, e.vintage, e.shop, e.old_value, e.new_value, e.score, e.url,
+                  SELECT e.kind, e.wine_id, e.wine, e.vintage, e.shop, e.old_value, e.new_value, e.score, e.url,
                          b.price_per_bottle_at_6, b.promotion, b.value, COALESCE(b.deal, 'no') AS deal,
-                         b.best_award, e.happened_on
+                         b.best_award, b.verdict, b.fair_price, e.happened_on
                   FROM weekly_events e LEFT JOIN best_buys b ON b.url = e.url
                   WHERE e.happened_on > ?)
                 WHERE {where}
@@ -122,9 +123,9 @@ def render(sections, today: dt.date, app_url: str = "") -> tuple[str, str]:
         parts.append("</table>")
         text.append("")
     if app_url:
-        text.append(f"Everything, including changes without a score: {app_url}/wijnkoop/weekly_overview")
-        parts.append(f"<p style='font-family:sans-serif'><a href='{html.escape(app_url)}/wijnkoop/weekly_overview'>"
-                     "Open the full weekly overview in WijnKoop</a> (only works at home)</p>")
+        text.append(f"Open this week in WijnKoop: {app_url}/week")
+        parts.append(f"<p style='font-family:sans-serif'><a href='{html.escape(app_url)}/week'>"
+                     "Open this week in WijnKoop</a></p>")
     parts.append("<p style='font-family:sans-serif;color:#777;font-size:12px'>Score = combined award score; "
                  "price per bottle when you buy 6, promotion included.</p>")
     return "\n".join(text), "\n".join(parts)
