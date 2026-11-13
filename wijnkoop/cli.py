@@ -7,7 +7,7 @@ import time
 
 from . import config, db, jobs, scores
 from .awards.importer import awards_due, match_awards, run_award_import
-from .collect import collect_shop, make_client
+from .collect import collect_shop, fetch_page, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
 from .shops import SHOPS, gall
 
@@ -58,7 +58,7 @@ def cmd_check(args):
     wine_urls = [u for u, _ in shop.list_products(client)][: args.count]
     config.SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     for url in wine_urls:
-        html = client.get(url)
+        html = fetch_page(shop, client, url)
         p = shop.parse_product(url, html)
         (config.SAMPLES_DIR / f"{shop.KEY}-{p.product_id}.html").write_text(html, encoding="utf-8")
         print("-" * 60)

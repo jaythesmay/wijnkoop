@@ -4,7 +4,7 @@ _koop wijn goedkoop_
 
 A private wine value finder that runs on a QNAP NAS. It reads wine prices from Dutch shops
 (Gall & Gall, Vindict, Henri Bloem, Okhuysen, Wijnvoordeel, Wijnbeurs, Grand Cru Wijnen,
-Grape District and Vino.com so far), combines them with award and critic scores, stores everything in one SQLite
+Grape District, Vino.com, Vanouds de Zwaan, Vinio, Colaris, Wijny, Alex Storms and Rootring Wijnen so far), combines them with award and critic scores, stores everything in one SQLite
 file and shows it at `http://<nas-address>:8001`.
 
 Design: see the "WijnKoop – app design" document.
@@ -56,6 +56,15 @@ and open `http://<nas tailscale name>:8001`.
   Vino.com (Italian, delivers in NL; about 6,800 pages, 9 to 10 hours) shows Suckling, Parker,
   Falstaff and other critic scores, often of another vintage; its own "Vino.com" score is left out.
   Its "Laagste prijs" (lowest price of the last 30 days) counts as the normal price of a reduced wine.
+- Vanouds de Zwaan (about 2,900 products) and Vinio (about 180) are Shopify shops: WijnKoop reads the
+  small product data Shopify offers per wine instead of the full page. Vinio's descriptions name critic
+  scores (Parker, Suckling, Falstaff). Colaris (about 1,400 pages) asks for 20 s between pages, so a run
+  takes about 8 hours; it shows Parker and other critic scores. Wijny is Bon Import's webshop (about
+  4,000 pages including spirits and beer, which are skipped). Alex Storms (about 480 wines) shows
+  Hamersma and Onno Kleyn ratings. Rootring Wijnen (about 4,000 wines) is read through its colour pages.
+- Not read: Brander Wines and Decantalo refuse automated visitors, bonimport.nl asks robots to stay
+  away (its shop Wijny is read), Beste Spaanse Wijn has no webshop, and Alleen Italiaanse Producten
+  has about 22,000 wines (a run would take more than 30 hours).
 - Wijnvoordeel and Wijnbeurs show their prices only after the page's JavaScript ran, so they are
   read with a headless browser (Chromium, in the image), 20 s apart as their robots.txt asks. It
   loads only the shop's own site (no images, trackers or cookie banners). Their medals come from
@@ -91,7 +100,7 @@ and open `http://<nas tailscale name>:8001`.
 | `python -m wijnkoop check --count 3` | Reads 3 wine pages, prints what it understood, saves the raw pages in `/data/samples` |
 | `python -m wijnkoop collect --limit 20` | Reads the first 20 wines into the database |
 | `python -m wijnkoop collect` | Reads all wines of every shop now (takes hours) |
-| `python -m wijnkoop collect --shop vindict` | Reads one shop now (`gall`, `vindict`, `henribloem`, `okhuysen`, `wijnvoordeel`, `wijnbeurs`, `grandcru`, `grapedistrict` or `vinocom`) |
+| `python -m wijnkoop collect --shop vindict` | Reads one shop now (`gall`, `vindict`, `henribloem`, `okhuysen`, `wijnvoordeel`, `wijnbeurs`, `grandcru`, `grapedistrict`, `vinocom`, `vanoudsdezwaan`, `vinio`, `colaris`, `wijny`, `storms` or `rootring`) |
 | `python -m wijnkoop collect --shop vindict,vinocom` | Reads these shops, one after the other |
 | `python -m wijnkoop collect --new` | Reads the shops never read before |
 | `python -m wijnkoop collect --due` | Reads the shops not read in the last two days |
