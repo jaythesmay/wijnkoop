@@ -171,7 +171,10 @@ CREATE TABLE IF NOT EXISTS offer_score (
     price_quality REAL,
     verdict TEXT,
     updated TEXT,
-    wine TEXT
+    wine TEXT,
+    price_as_93 REAL,
+    market_rank REAL,
+    best_for_price INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS setting (
     key TEXT PRIMARY KEY,
@@ -249,9 +252,12 @@ SELECT
     ws.n_awards AS awards,
     ws.best_award,
     os.value,
+    os.price_as_93,
+    CAST(ROUND(100 * os.market_rank) AS INTEGER) AS cheaper_than_pct,
+    os.verdict,
+    CASE os.best_for_price WHEN 1 THEN 'yes' ELSE 'no' END AS nothing_better_for_less,
     os.fair_price,
     os.price_quality,
-    os.verdict,
     CASE ws.gold WHEN 1 THEN 'yes' ELSE 'no' END AS gold_or_better,
     w.grapes,
     w.style,
@@ -409,7 +415,8 @@ def _backup(con, path, version):
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
-    "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT")],
+    "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
+                    ("price_as_93", "REAL"), ("market_rank", "REAL"), ("best_for_price", "INTEGER DEFAULT 0")],
 }
 
 

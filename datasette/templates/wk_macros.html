@@ -36,7 +36,7 @@
       <small>per bottle at 6{% if c.normal_price and c.price_per_bottle_at_6 and c.normal_price - c.price_per_bottle_at_6 > 0.01 %} · normally {{ c.normal_price|money }}{% endif %}</small></div>
     {% if c.verdict %}
     <div class="fair"><span class="pill v-{{ c.verdict|verdict_class }}">{{ c.verdict }}</span>
-      <small>this score usually costs {{ c.fair_price|money }}</small></div>
+      <small>like a 93 for {{ c.price_as_93|money }} · cheaper than {{ c.cheaper_than_pct }}% of award wines</small></div>
     {% endif %}
   </div>
   {% if c.matched_award %}<div class="award">🏅 {{ c.matched_award }}</div>
@@ -44,7 +44,7 @@
   {% if c.promotion or c.tags %}
   <div class="tags">
     {% if c.promotion %}<span class="tag promo">{{ c.promotion }}</span>{% endif %}
-    {% for t in c.tags %}<span class="tag {{ {'Deal': 'deal', 'Gold or better': 'gold', 'Out of stock online': 'stock'}.get(t, '') }}"{% if t == 'Deal' and c.deal_reason %} title="{{ c.deal_reason }}"{% endif %}>{{ t }}{% if t == 'Deal' and c.deal_reason %}: {{ c.deal_reason }}{% endif %}</span>{% endfor %}
+    {% for t in c.tags %}<span class="tag {{ {'Deal': 'deal', 'Gold or better': 'gold', 'Out of stock online': 'stock', 'Nothing better for less': 'best'}.get(t, '') }}"{% if t == 'Deal' and c.deal_reason %} title="{{ c.deal_reason }}"{% endif %}>{{ t }}{% if t == 'Deal' and c.deal_reason %}: {{ c.deal_reason }}{% endif %}</span>{% endfor %}
   </div>
   {% endif %}
   {% if show_actions %}

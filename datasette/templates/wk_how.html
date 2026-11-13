@@ -10,23 +10,34 @@ own band (an IWC gold is 96, a Concours Mondial gold is 90). Bronze and commende
 A wine with only one small award is pulled a little towards 88, so one lucky medal can't put it at the top.</p>
 <p><b>Gold or better</b> means a gold, grand gold, platinum or trophy from a competition, or 93+ points from a critic.</p>
 
-<h2>Price for quality</h2>
-<p>Better wine costs more, and not in a straight line: every extra point costs a fixed percentage more.
-WijnKoop works out what a wine with a given score <i>usually</i> costs and compares that with the price you pay
-per bottle when you buy 6.</p>
-<p>Right now one point is worth about <b>{{ rule.per_point_pct }}%</b> more money
-{% if rule.learned %}(learned from {{ rule.fit_wines }} wines with an award and a price).{% else %}(a starting rule; once 30 award-winning wines have a price, WijnKoop learns this from your shops).{% endif %}
-So if a 93 costs {{ 10|money }}, a 94 “should” cost about {{ example|money }}.</p>
+<h2 id="rate">Price for quality</h2>
+<p>Two wines with different scores are made comparable with <b>your own rule</b>: how much more money one
+extra point is worth to you. Every wine is then shown as <b>“like a 93 for €…”</b>: what it would cost if it
+were a 93. Lower is better.</p>
+<p>Your rule now: <b>{{ rule.rate }}% per point</b>. So a 94 for {{ rule.example|money }} is worth the same to you as a 93 for {{ 10|money }}.</p>
+<form method="post" action="/how" class="filters" style="margin:10px 0 4px">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <label for="rate_pct">One point more is worth <output id="rate_out">{{ rule.rate }}</output>% more money</label>
+  <input type="range" id="rate_pct" name="rate_pct" min="5" max="50" step="1" value="{{ rule.rate_pct|int }}" oninput="rate_out.value = this.value">
+  <div><button class="primary" type="submit">Save and recalculate</button></div>
+</form>
+<p class="small muted">For comparison: in large public sets of critic reviews with prices, one point costs roughly 15 to 20% more between 88 and 95 points.
+{% if rule.shops_pct %}In your shops right now it is about {{ rule.shops_pct }}% (from {{ rule.fit_wines }} award wines).{% endif %}</p>
+
+<p>Each wine is then ranked against <b>all award wines in all shops</b> ({{ rule.award_wines }} now), on that “like a 93” price:</p>
 <table class="list">
 <tr><th>Label</th><th>Meaning</th></tr>
-<tr><td><span class="pill v-top">Top buy</span></td><td>You pay two thirds or less of what this score usually costs.</td></tr>
-<tr><td><span class="pill v-good">Good buy</span></td><td>At least 15% cheaper than usual for this score.</td></tr>
-<tr><td><span class="pill v-fair">Fair</span></td><td>About the usual price for this score.</td></tr>
-<tr><td><span class="pill v-pricey">Pricey for its score</span></td><td>You pay more than this score usually costs.</td></tr>
+<tr><td><span class="pill v-top">Top buy</span></td><td>Among the cheapest 10% of award wines.</td></tr>
+<tr><td><span class="pill v-good">Good buy</span></td><td>Cheaper than at least 70%.</td></tr>
+<tr><td><span class="pill v-fair">Fair</span></td><td>In the middle.</td></tr>
+<tr><td><span class="pill v-pricey">Pricey for its score</span></td><td>Among the most expensive 30%.</td></tr>
 </table>
+<p><span class="tag best">Nothing better for less</span> means no other wine of the same colour, in stock, has a
+higher score for the same money or less. That one does not depend on your rule at all.</p>
 
 <h2>Deal</h2>
-<p>A deal is a price (per bottle at 6, promotion included) at least 15% below this wine's own median price of the
-last 90 days, or cheaper than in any other shop. Until there are 90 days of prices, the normal shop price is used.</p>
+<p>A deal is about the price of <i>this</i> wine: at least 15% below its own median price of the last 90 days
+(per bottle at 6, promotion included), or cheaper than in any other shop. Until there are 90 days of prices,
+the normal shop price is used.</p>
 </div>
 {% endblock %}

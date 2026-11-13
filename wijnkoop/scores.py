@@ -5,18 +5,24 @@ overall  = (sum(w * s) + K * M) / (sum(w) + K)   K = 0.5, M = 88
            w = competition weight (1.0 / 0.7 / 0.4).
 track    = awards of OTHER vintages of the same wine, and of the producer's other wines.
            Shown next to the score, never mixed into it.
-fair     = the price a wine of this score usually costs: ln(fair) = c + d * score, fitted
-           on all priced wines with award evidence (one point = e^d - 1 more money; until
-           30 wines are known, 35% per point and EUR 12 for a score of 89). d is kept
-           between 15% and 50% per point so a few odd wines cannot run away with it.
-price-quality = fair / price per bottle at 6: 1.5 = you pay two thirds of what this
-           quality usually costs. Verdict: >= 1.5 Top buy, >= 1.15 Good buy, >= 0.87 Fair,
-           below that Pricey for its score.
-value    = the same in points: score minus the score that this price usually buys.
+
+Value for money (version 2): one yardstick that Loes sets herself, compared with the whole market.
+price as a 93 = price per 75cl at 6 bottles * (1 + rate) ^ (93 - score); rate = how much more money
+           one point is worth to her (setting points_rate_pct, default 20%: "a 93 for EUR 10 is
+           worth the same as a 94 for EUR 12"). Lower is better.
+market rank = share of all award wines in all shops (cheapest offer per wine) whose price as a 93
+           is higher: 0.85 = cheaper than 85% of award wines. Verdict: >= 0.9 Top buy, >= 0.7 Good buy,
+           >= 0.3 Fair, below that Pricey for its score.
+value    = the same in points: how many points more than the median award wine for the same money.
+nothing better for less = no other wine of the same colour, in stock online, scores higher for the
+           same money or less.
+fair     = only for information in the expert tables: ln(price) = c + d * score fitted on the shops'
+           award wines (one point per wine).
 deal     = price per bottle at 6 bottles at least 15% below this offer's own 90-day
            median, or below the cheapest other shop. Until 90 days of history exist,
            the normal (non-promotion) price is the reference.
 """
+import bisect
 import datetime as dt
 import math
 import statistics
@@ -33,7 +39,10 @@ DEFAULT_PER_POINT = 0.35
 DEFAULT_ANCHOR = (89.0, 12.0)  # score 89 usually costs EUR 12 per bottle
 PER_POINT_RANGE = (0.15, 0.50)
 MIN_FIT_WINES = 30
-VERDICTS = [(1.5, "Top buy"), (1.15, "Good buy"), (0.87, "Fair"), (0.0, "Pricey for its score")]
+VERDICTS = [(0.9, "Top buy"), (0.7, "Good buy"), (0.3, "Fair"), (0.0, "Pricey for its score")]
+REF_SCORE = 93.0
+DEFAULT_RATE_PCT = 20.0
+RATE_RANGE = (5.0, 50.0)
 GOLD_MEDALS = ("Gold", "Grand Gold", "Platinum", "Trophy")
 GOLD_CRITIC_POINTS = 93
 
@@ -68,10 +77,45 @@ def fair_price(score: float, c: float, d: float) -> float:
     return math.exp(c + d * score)
 
 
-def verdict(ratio: float | None) -> str | None:
-    if ratio is None:
+def verdict(rank: float | None) -> str | None:
+    """rank: share of award wines that cost more as a 93 (0..1)."""
+    if rank is None:
         return None
-    return next(name for limit, name in VERDICTS if ratio >= limit)
+    return next(name for limit, name in VERDICTS if rank >= limit)
+
+
+def rate_pct(con) -> float:
+    try:
+        row = con.execute("SELECT value FROM setting WHERE key = 'points_rate_pct'").fetchone()
+        r = float(row[0]) if row else DEFAULT_RATE_PCT
+    except Exception:
+        r = DEFAULT_RATE_PCT
+    return min(max(r, RATE_RANGE[0]), RATE_RANGE[1])
+
+
+def price_as(price: float, score: float, rate: float, ref: float = REF_SCORE) -> float:
+    """What this wine would cost as a wine of score ref, with rate (0.2 = 20%) per point."""
+    return price * (1 + rate) ** (ref - score)
+
+
+def nothing_better_for_less(items: list[tuple]) -> set:
+    """items: [(key, price, score)]. Keys of items for which no other item has a higher score
+    at the same price or less."""
+    best = set()
+    by_price = sorted(items, key=lambda x: x[1])
+    i, top = 0, float("-inf")
+    while i < len(by_price):
+        j = i
+        while j < len(by_price) and by_price[j][1] == by_price[i][1]:
+            j += 1
+        group = by_price[i:j]
+        group_top = max(sc for _, _, sc in group)
+        for key, _, sc in group:
+            if sc >= top and sc >= group_top:
+                best.add(key)
+        top = max(top, group_top)
+        i = j
+    return best
 
 
 def _wine_scores(con, now):
@@ -157,7 +201,7 @@ def recompute(con, today: dt.date | None = None):
         """SELECT o.id, o.wine_id, o.shop_id, o.price_per_75cl, o.was_price, o.price, o.volume_cl,
                   o.effective_price_per_75cl, o.in_stock_online, s.name AS shop,
                   s.delivery_cost, s.free_delivery_from,
-                  w.name || COALESCE(' ' || w.vintage, '') || ' (' || s.name || ')' AS label
+                  w.name || COALESCE(' ' || w.vintage, '') || ' (' || s.name || ')' AS label, w.colour
            FROM offer o JOIN shop s ON s.id = o.shop_id JOIN wine w ON w.id = o.wine_id
            WHERE o.is_current = 1 AND o.gone_since IS NULL"""
     ).fetchall()
@@ -188,6 +232,21 @@ def recompute(con, today: dt.date | None = None):
     con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('price_fit', ?)",
                 (f"{c:.6f} {d:.6f}",))
 
+    rate = rate_pct(con) / 100
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('points_rate_pct', ?)", (f"{rate * 100:g}",))
+    # The market: the cheapest offer of every award wine in every shop, as a 93.
+    market = {w: price_as(eff, s, rate) for w, (eff, s) in cheapest_per_wine.items()}
+    sorted93 = sorted(market.values())
+    median93 = statistics.median(market.values()) if market else None
+    frontier = set()
+    by_colour = defaultdict(list)
+    for o in offers:
+        s = wine_overall.get(o["wine_id"])
+        if s and o["effective_price_per_75cl"] and o["in_stock_online"] != 0:
+            by_colour[o["colour"]].append((o["id"], o["effective_price_per_75cl"], s))
+    for items in by_colour.values():
+        frontier |= nothing_better_for_less(items)
+
     con.execute("DELETE FROM offer_score")
     for o in offers:
         eff = o["effective_price_per_75cl"]
@@ -206,19 +265,25 @@ def recompute(con, today: dt.date | None = None):
         if others and eff < min(others):
             reasons.append("cheapest shop")
         score = wine_overall.get(o["wine_id"])
-        fair = ratio = value = None
+        fair = ratio = value = p93 = rank = None
         if score:
             fair = round(fair_price(score, c, d) * (o["volume_cl"] or 75) / 75, 2)
             ratio = round(fair / bottle, 2)
-            value = round(score - (math.log(eff) - c) / d, 1)
+            p93 = price_as(eff, score, rate)
+            # rank of this offer among the market (the cheapest offer of each wine)
+            if len(market) >= 2:
+                # the wine's own market entry is its cheapest offer, never higher than this one
+                rank = round((len(sorted93) - bisect.bisect_right(sorted93, p93)) / (len(sorted93) - 1), 3)
+            value = round(math.log(median93 / p93) / math.log(1 + rate), 1) if median93 else None
+            p93 = round(p93, 2)
         con.execute(
             """INSERT INTO offer_score (offer_id, bottle_price_at_6, order_of_6, delivery_at_6, reference_price,
                                         is_deal, deal_reason, value, fair_price, price_quality, verdict, updated,
-                                        wine)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                        wine, price_as_93, market_rank, best_for_price)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (o["id"], bottle, total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
-             value, fair, ratio, verdict(ratio), now, o["label"]),
+             value, fair, ratio, verdict(rank), now, o["label"], p93, rank, int(o["id"] in frontier)),
         )
     con.commit()
     return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),
-            "fit_wines": n_fit}
+            "fit_wines": n_fit, "rate_pct": rate * 100}
