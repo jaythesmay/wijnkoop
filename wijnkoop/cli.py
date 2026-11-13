@@ -44,6 +44,7 @@ def cmd_collect(args):
         if status[key]["state"] in ("running", "queued"):
             print(f"{status[key]['name']}: already being read, skipped")
             continue
+        jobs.wait_for_slot(con, key, say=print)
         collect_shop(SHOPS[key], limit=args.limit, con=con)
     if not keys:
         print("Nothing to read: every shop was read recently.")
@@ -125,7 +126,8 @@ def cmd_scheduler(args):
         con = db.connect()
         try:
             busy = jobs.running_shops(con)  # a run started from the app
-            due = [key for key in SHOPS if run_is_due(con, now, key) and key not in busy]
+            due = [key for key in SHOPS
+                   if run_is_due(con, now, key) and key not in busy and jobs.slot_free(con, key)]
             if due:
                 collect_shop(SHOPS[due[0]], con=con)
                 match_awards(con)
@@ -309,6 +311,8 @@ def main(argv=None):
     sub.add_parser("mail", help="send the weekly overview e-mail now").set_defaults(func=cmd_mail)
     sub.add_parser("scheduler", help="run the weekly schedule forever").set_defaults(func=cmd_scheduler)
     args = parser.parse_args(argv)
+    if args.command in ("collect", "scheduler", "awards"):
+        jobs.be_nice()
     args.func(args)
 
 

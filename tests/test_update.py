@@ -189,3 +189,46 @@ def test_failure_reason_has_no_address():
 
     assert failure_reason(ValueError("could not convert 'abc' at https://x.nl/a")) == \
         "ValueError: could not convert 'abc' at <page>"
+
+
+def test_limits_make_runs_wait(con, monkeypatch):
+    browser = [k for k in SHOPS if jobs.needs_browser(k)]
+    plain = [k for k in SHOPS if not jobs.needs_browser(k)]
+    assert jobs.limits(con) == {"max_runs": 2, "max_browser_runs": 1}
+    assert jobs.slot_free(con, plain[0]) and jobs.slot_free(con, browser[0])
+    _run(con, browser[0], hours_ago=0, finished=False, process=process_token())
+    assert not jobs.slot_free(con, browser[1])  # one browser run at a time
+    assert jobs.slot_free(con, plain[0])
+    _run(con, plain[1], hours_ago=0, finished=False, process=process_token())
+    assert not jobs.slot_free(con, plain[0])  # two runs at a time
+    jobs.set_limits(con, "3", "2")
+    assert jobs.limits(con) == {"max_runs": 3, "max_browser_runs": 2}
+    assert jobs.slot_free(con, plain[0]) and jobs.slot_free(con, browser[1])
+    jobs.set_limits(con, "0", "abc")  # nonsense is ignored
+    assert jobs.limits(con) == {"max_runs": 3, "max_browser_runs": 2}
+
+
+def test_job_waits_for_a_free_place(con, monkeypatch):
+    monkeypatch.setattr("wijnkoop.awards.importer.match_awards", lambda con: None)
+    jobs.set_limits(con, "1", "1")
+    blocker = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        _run(con, "vindict", hours_ago=0, finished=False, process=process_token(blocker.pid))
+        job_id = jobs.request_run(con, ["gall"])["job_id"]
+        sleeps = []
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            if len(sleeps) == 1:  # while waiting, the other run ends
+                assert con.execute("SELECT note FROM app_job WHERE id=?", (job_id,)).fetchone()[0] == \
+                    "waiting for a free place"
+                assert _state(con, "gall", dt.datetime.now())["advice"] == "waiting until fewer shops are being read"
+                blocker.kill()
+                blocker.wait()
+
+        monkeypatch.setattr(jobs.time, "sleep", fake_sleep)
+        read = []
+        assert jobs.run_job(con, job_id, lambda shop, con: read.append(shop.KEY)) == ["gall"]
+        assert sleeps and read == ["gall"]
+    finally:
+        blocker.kill()

@@ -9,9 +9,11 @@ whose process is still alive counts as running.
 import datetime as dt
 import os
 import signal
+import random
 import subprocess
 import sys
 import threading
+import time
 
 from . import config
 from .process import is_alive, process_token
@@ -19,6 +21,76 @@ from .shops import SHOPS
 
 FRESH_HOURS = 48  # read less than two days ago: a new run finds little that is new
 SOON_HOURS = 12  # the weekly run starts within this many hours: better to wait for it
+# A NAS has little power: by default at most 2 shops are read at the same time, and at most 1 of
+# them with the headless browser (Wijnvoordeel, Wijnbeurs), which is the heavy part. The others wait.
+DEFAULT_MAX_RUNS = 2
+DEFAULT_MAX_BROWSER_RUNS = 1
+NICE = int(os.environ.get("WIJNKOOP_NICE", "10"))  # runs give way to the web pages
+
+
+def _setting(con, key, default):
+    try:
+        row = con.execute("SELECT value FROM setting WHERE key=?", (key,)).fetchone()
+        return int(row[0]) if row and str(row[0]).isdigit() else default
+    except Exception:
+        return default
+
+
+def limits(con) -> dict:
+    return {"max_runs": max(1, _setting(con, "max_runs", DEFAULT_MAX_RUNS)),
+            "max_browser_runs": max(1, _setting(con, "max_browser_runs", DEFAULT_MAX_BROWSER_RUNS))}
+
+
+def set_limits(con, max_runs, max_browser_runs):
+    for key, value in (("max_runs", max_runs), ("max_browser_runs", max_browser_runs)):
+        if str(value).isdigit() and 1 <= int(value) <= 10:
+            con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (key, str(int(value))))
+    con.commit()
+
+
+def needs_browser(key: str) -> bool:
+    return bool(getattr(SHOPS[key], "NEEDS_BROWSER", False))
+
+
+def slot_free(con, key: str) -> bool:
+    """Whether this shop may start now without going over the limits."""
+    lim = limits(con)
+    others = [k for k in running_shops(con) if k != key]
+    if len(others) >= lim["max_runs"]:
+        return False
+    return not needs_browser(key) or sum(map(needs_browser, others)) < lim["max_browser_runs"]
+
+
+def wait_for_slot(con, key: str, job_id: int | None = None, poll: float = 30, say=None) -> None:
+    """Wait until this shop may start. Two runs that wait both look again after a random moment,
+    so they do not start together."""
+    waited = False
+    while True:
+        if slot_free(con, key):
+            if not waited:
+                return
+            time.sleep(random.uniform(1, 8))
+            if slot_free(con, key):
+                break
+        if not waited:
+            waited = True
+            if job_id:
+                con.execute("UPDATE app_job SET note='waiting for a free place' WHERE id=?", (job_id,))
+                con.commit()
+            if say:
+                say(f"{SHOPS[key].SHOP_NAME}: waiting until fewer shops are being read")
+        time.sleep(poll)
+    if job_id:
+        con.execute("UPDATE app_job SET note=NULL WHERE id=?", (job_id,))
+        con.commit()
+
+
+def be_nice():
+    """Runs get a lower priority than the web pages, so the app stays quick while they work."""
+    try:
+        os.nice(NICE)
+    except (AttributeError, OSError):
+        pass
 
 # --- status ----------------------------------------------------------------------------------
 
@@ -97,7 +169,10 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
         if s["running"]:
             s["state"], s["advice"] = "running", s["running"]["note"] or "starting"
         elif s["queued"]:
-            s["state"], s["advice"] = "queued", "waiting for the shop before it in the same run"
+            note = next((j["note"] for j in jobs if j["id"] == queued[key]), None)
+            s["state"] = "queued"
+            s["advice"] = ("waiting until fewer shops are being read" if note == "waiting for a free place"
+                           else "waiting for the shop before it in the same run")
         elif s["broke_off"] and s["broke_off"]["started"] > (finished.isoformat() if finished else ""):
             s["state"] = "useful"
             s["advice"] = (f"the last run stopped ({s['broke_off']['note'] or 'before the first page'}); "
@@ -114,7 +189,7 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
             s["state"], s["advice"] = "useful", f"read {_ago(finished, now)}"
         s["last_text"] = f"{finished:%a %d %b %H:%M}" if finished else "never"
         shops.append(s)
-    return {"shops": shops, "jobs": jobs, "next_weekly": nxt, "weekly_soon": soon,
+    return {"shops": shops, "jobs": jobs, "next_weekly": nxt, "weekly_soon": soon, "limits": limits(con),
             "useful": [s["key"] for s in shops if s["state"] == "useful"]}
 
 
@@ -173,6 +248,10 @@ def run_job(con, job_id: int, collect) -> list[str]:
     keys = con.execute("SELECT shops FROM app_job WHERE id=?", (job_id,)).fetchone()["shops"].split(",")
     done, notes = [], []
     for key in keys:
+        if key in running_shops(con):
+            notes.append(f"{key} already running elsewhere")
+            continue
+        wait_for_slot(con, key, job_id)
         if key in running_shops(con):
             notes.append(f"{key} already running elsewhere")
             continue
