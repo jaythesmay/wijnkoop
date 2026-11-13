@@ -104,11 +104,22 @@ def test_award_text():
     d = reference.parse_award_text("Jancis Robinson 17/20")
     assert d["points"] == 92.5
     assert reference.parse_award_text("Lekker bij kaas") is None
-    assert reference.award_score("Bronze", None) is None
-    assert reference.award_score("Gold", None) == 92
     assert reference.award_score("Gold", None, "IWC") == 96
-    assert reference.award_score("Silver", None, "CMB") == 87
     assert reference.award_score("Silver", 90) == 90
+
+
+def test_medal_means_what_its_competition_says():
+    """A gold at Gilbert & Gaillard (85-89) is worth about a bronze at Decanter (86-89)."""
+    score = reference.award_score
+    assert score("Gold", None, "Gilbert & Gaillard") == 87 and score("Bronze", None, "DWWA") == 87.5
+    assert score("Gold", None, "Berliner Wein Trophy") == score("Gold", None, "CMB") == 88
+    assert score("Grand Gold", None, "Gilbert & Gaillard") == 92  # "Double Gold"
+    assert score("Silver", None, "Mundus Vini") == 87 and score("Gold", None, "Mundus Vini") == 92
+    assert score("Gold", None) == 88 and score("Bronze", None, "IWC") == 87  # unknown: OIV scale
+    assert score("Commended", None) is None
+    assert score(None, 98, "Luca Maroni") == 92 and score(None, 95, "Suckling") == 95
+    g = reference.parse_award_text("Gilbert & Gaillard 2024", "Double Gold")
+    assert score(g["medal"], g["points"], g["competition"][0]) == 92
 
 
 # --- Saving, vintages, gone ---------------------------------------------------------
