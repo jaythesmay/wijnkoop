@@ -2,8 +2,8 @@
 
 Vivino's terms forbid reading vivino.com with automated means, so WijnKoop never opens a
 Vivino page. Instead it asks a search engine (Brave Search API, with Loes's own key) for the
-wine on vivino.com and reads the rating from the search result: Brave's structured rating
-when it has one, otherwise a rating in the snippet text.
+wine on vivino.com and reads the rating and price from the search result: Brave's structured
+data when it has it, otherwise the snippet text. Only prices in euros are kept.
 
 - The key lives in /data/brave.ini (written by "python -m wijnkoop vivino-setup"), never in code.
 - At most MONTHLY_LIMIT searches a month, so the free monthly credit is never exceeded.
@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS vivino_rating (
     match_score REAL,
     how TEXT,                  -- 'structured', 'snippet' or 'no result'
     snippet TEXT,
-    checked_on TEXT
+    checked_on TEXT,
+    price REAL                 -- euros per bottle as the search result showed it, NULL when none
 );
 CREATE TABLE IF NOT EXISTS vivino_usage (month TEXT PRIMARY KEY, searches INTEGER NOT NULL DEFAULT 0);
 """
@@ -47,6 +48,9 @@ CREATE TABLE IF NOT EXISTS vivino_usage (month TEXT PRIMARY KEY, searches INTEGE
 
 def ensure_tables(con):
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(vivino_rating)")}
+    if "price" not in cols:  # databases from before prices were read
+        con.execute("ALTER TABLE vivino_rating ADD COLUMN price REAL")
 
 
 def save_key(key: str, path=None):
@@ -111,6 +115,46 @@ def _rating_from_text(text: str) -> tuple[float | None, int | None]:
     return rating, count
 
 
+EURO = r"(\d{1,4}(?:[.,]\d{2})?)"
+SNIPPET_PRICE = [
+    re.compile(r"(?:€|EUR)\s?" + EURO + r"(?![\d%])", re.I),
+    re.compile(r"(?<![\d.,])" + EURO + r"\s?(?:€|EUR\b)", re.I),
+]
+PRICE_WORDS = re.compile(r"price|prijs|prix|preis|kopen|buy|from|vanaf", re.I)
+
+
+def _euros(value) -> float | None:
+    try:
+        v = float(str(value).replace(",", "."))
+    except ValueError:
+        return None
+    return round(v, 2) if 2 <= v <= 5000 else None
+
+
+def _price_from_text(text: str) -> float | None:
+    """The first euro price in the text; one next to a word such as "price" wins."""
+    found = []
+    for rx in SNIPPET_PRICE:
+        for m in rx.finditer(text):
+            v = _euros(m.group(1))
+            if v:
+                near = PRICE_WORDS.search(text[max(0, m.start() - 30):m.start()])
+                found.append((0 if near else 1, m.start(), v))
+    return min(found)[2] if found else None
+
+
+def _price_from_structured(r: dict) -> float | None:
+    offers = (r.get("product") or {}).get("offers") or r.get("offers") or []
+    if isinstance(offers, dict):
+        offers = [offers]
+    for o in offers:
+        if isinstance(o, dict) and (o.get("priceCurrency") or "EUR").upper() == "EUR":
+            v = _euros(o.get("price") or o.get("lowPrice") or "")
+            if v:
+                return v
+    return None
+
+
 def candidates(result: dict) -> list[dict]:
     """Vivino wine pages in a Brave result, with any rating the result carries."""
     out = []
@@ -131,8 +175,10 @@ def candidates(result: dict) -> list[dict]:
         else:
             rating, count = _rating_from_text(text)
             how = "snippet" if rating else None
+        price = _price_from_structured(r) or _price_from_text(text)
         out.append({"title": title, "url": url.split("?")[0], "rating": rating,
-                    "ratings_count": int(count) if count else None, "how": how, "snippet": text[:300]})
+                    "ratings_count": int(count) if count else None, "how": how, "snippet": text[:300],
+                    "price": price})
     return out
 
 
@@ -162,10 +208,11 @@ def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = No
     match, score = best_match(name, candidates(result))
     row = {"wine_id": wine_id, "wine": f"{name} {vintage or ''}".strip(), "rating": None, "ratings_count": None,
            "vivino_title": None, "vivino_url": None, "match_score": round(score, 1), "how": "no result",
-           "snippet": None, "checked_on": (today or dt.date.today()).isoformat()}
+           "snippet": None, "checked_on": (today or dt.date.today()).isoformat(), "price": None}
     if match:
         row.update(rating=match["rating"], ratings_count=match["ratings_count"], vivino_title=match["title"],
-                   vivino_url=match["url"], how=match["how"] or "no rating in result", snippet=match["snippet"])
+                   vivino_url=match["url"], how=match["how"] or "no rating in result", snippet=match["snippet"],
+                   price=match["price"])
     con.execute(f"INSERT OR REPLACE INTO vivino_rating ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
                 tuple(row.values()))
     con.commit()

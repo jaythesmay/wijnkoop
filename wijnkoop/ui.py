@@ -304,8 +304,9 @@ def wine(conn, wine_id: int) -> dict | None:
     rule = price_rule(conn)
     chart = value_chart(conn, w["colour"], wine_id, rule["rate_pct"]) if w["score"] else None
     try:
-        viv = _rows(conn, "SELECT rating, ratings_count, vivino_title, vivino_url, how, checked_on "
-                          "FROM vivino_rating WHERE wine_id = ? AND rating IS NOT NULL", (wine_id,))
+        viv = _rows(conn, "SELECT rating, ratings_count, vivino_title, vivino_url, how, checked_on, price "
+                          "FROM vivino_rating WHERE wine_id = ? AND (rating IS NOT NULL OR price IS NOT NULL)",
+                    (wine_id,))
     except sqlite3.OperationalError:  # database not upgraded yet
         viv = []
     vivino = {"rating": viv[0] if viv else None, "search": vivino_search_link(w["name"], w["vintage"])}

@@ -196,10 +196,13 @@ def cmd_vivino_test(args):
         except Exception as exc:  # show the reason (wrong key, limit) and stop
             print(f"Stopped: {exc}")
             break
+        price = f", €{r['price']:.2f}" if r.get("price") else ""
         if r["rating"]:
             found += 1
-            print(f"  {r['wine']}: {r['rating']:.1f} stars ({r['ratings_count'] or '?'} ratings, {r['how']})"
+            print(f"  {r['wine']}: {r['rating']:.1f} stars ({r['ratings_count'] or '?'} ratings, {r['how']}{price})"
                   f"  <- {r['vivino_title']}")
+        elif price:
+            print(f"  {r['wine']}: no rating{price}  <- {r['vivino_title']}")
         else:
             print(f"  {r['wine']}: no rating ({r['how']}, best match {r['match_score']:.0f})")
         time.sleep(1.1)

@@ -13,7 +13,7 @@
     {% else %}<b>No score yet.</b> No silver-or-better award or critic score is known for this vintage.{% endif %}
     {% if w.cuvee_vintages %}<br><span class="small">Other vintages: {{ w.cuvee_vintages }} with awards, average {{ w.cuvee_avg|score }}.</span>{% endif %}
     {% if w.producer_wines %}<br><span class="small">Producer's other wines: {{ w.producer_wines }} with awards, average {{ w.producer_avg|score }}.</span>{% endif %}
-    <br><span class="small">{% if vivino.rating %}Vivino: <b>{{ '%.1f'|format(vivino.rating.rating) }} ★</b>{% if vivino.rating.ratings_count %} from {{ vivino.rating.ratings_count }} ratings{% endif %} (<a href="{{ vivino.rating.vivino_url }}" rel="noopener" target="_blank">{{ vivino.rating.vivino_title }}</a>, seen {{ vivino.rating.checked_on }}); not part of the score.{% else %}<a href="{{ vivino.search }}" rel="noopener" target="_blank">Look this wine up on Vivino</a>{% endif %}</span>
+    <br><span class="small">{% if vivino.rating %}Vivino: {% if vivino.rating.rating %}<b>{{ '%.1f'|format(vivino.rating.rating) }} ★</b>{% if vivino.rating.ratings_count %} from {{ vivino.rating.ratings_count }} ratings{% endif %}{% endif %}{% if vivino.rating.price %}{% if vivino.rating.rating %} · {% endif %}price there <b>{{ vivino.rating.price|money }}</b>{% endif %} (<a href="{{ vivino.rating.vivino_url }}" rel="noopener" target="_blank">{{ vivino.rating.vivino_title }}</a>, seen {{ vivino.rating.checked_on }}); not part of the score.{% else %}<a href="{{ vivino.search }}" rel="noopener" target="_blank">Look this wine up on Vivino</a>{% endif %}</span>
   </div>
 </div>
 <div class="actions" style="margin-bottom:8px">{{ m.watch_button(w.id, watched) }}</div>
