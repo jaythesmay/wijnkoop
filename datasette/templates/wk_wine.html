@@ -84,7 +84,7 @@
   <td><b>{{ a.short }}</b> {{ a.year or '' }} {{ a.medal or '' }}{% if a.points %} {{ a.points|score }} pts{% endif %}
     <div class="meta">{{ a.competition }} · counts {{ (a.weight * 100)|round|int }}%{% if a.confirmed == 0 %} · <i>not confirmed, not counted</i>{% elif a.confirmed is none %} · probable match ({{ (a.match_score * 100)|round|int }}%){% endif %}</div>
     <div class="meta">From {% if a.origin_url %}<a href="{{ a.origin_url }}"{% if a.origin_url.startswith('http') %} target="_blank" rel="noopener"{% endif %}>{{ a.origin }}</a>{% else %}{{ a.origin }}{% endif %}{% if a.found_on %}, read {{ a.found_on }}{% endif %}{% if a.rated_vintage %}, about the {{ a.rated_vintage }} vintage{% endif %}{% if a.raw_text %}: <q>{{ a.raw_text|truncate(220) }}</q>{% endif %}</div></td>
-  <td class="num">{% if a.medal in ('Bronze', 'Commended') %}<span class="muted small">not counted</span>{% endif %}</td>
+  <td class="num">{% if a.counts_as is none %}<span class="muted small">not counted</span>{% else %}<span title="what this award counts as on the 100-point scale">{{ a.counts_as|score }}</span>{% endif %}</td>
 </tr>
 {% endfor %}
 </table></div>

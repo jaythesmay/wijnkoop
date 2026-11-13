@@ -1,7 +1,7 @@
 """Scores, track record, value and deals. Recomputed after every shop run.
 
 overall  = (sum(w * s) + K * M) / (sum(w) + K)   K = 0.5, M = 88
-           s = points, or the medal's score; Bronze/Commended are no evidence;
+           s = points, or the middle of the medal's band in that competition (reference.py);
            w = competition weight (1.0 / 0.7 / 0.4).
 track    = awards of OTHER vintages of the same wine, and of the producer's other wines.
            Shown next to the score, never mixed into it.
@@ -43,8 +43,7 @@ VERDICTS = [(0.9, "Top buy"), (0.7, "Good buy"), (0.3, "Fair"), (0.0, "Pricey fo
 REF_SCORE = 93.0
 DEFAULT_RATE_PCT = 20.0
 RATE_RANGE = (5.0, 50.0)
-GOLD_MEDALS = ("Gold", "Grand Gold", "Platinum", "Trophy")
-GOLD_CRITIC_POINTS = 93
+GOLD_POINTS = 93
 
 
 def overall(scored: list[tuple[float, float]]) -> float | None:
@@ -150,8 +149,9 @@ def _wine_scores(con, now):
         label = " ".join(str(x) for x in (r["short"], r["year"], r["medal"],
                                           f"{r['points']:g} pts" if r["points"] else None) if x)
         per_wine[r["wine_id"]].append((s, r["weight"] or 0.4, label))
-        if (r["kind"] == "critic" and (r["points"] or 0) >= GOLD_CRITIC_POINTS) or (
-                r["kind"] != "critic" and r["medal"] in GOLD_MEDALS):
+        # "Gold or better": an award worth 93+ (an IWC or Decanter gold, a critic's 93), not every
+        # medal called gold (a Gilbert & Gaillard gold is 85-89).
+        if s >= GOLD_POINTS:
             gold.add(r["wine_id"])
 
     wine_overall = {w: overall([(s, wt) for s, wt, _ in v]) for w, v in per_wine.items()}

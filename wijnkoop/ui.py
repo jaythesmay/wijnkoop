@@ -49,10 +49,8 @@ CARD_COLUMNS = """offer_id, wine_id, wine, vintage, producer, colour, country, s
 
 # Filters on one competition or critic: what result counts.
 AWARD_RESULTS = {
-    "counted": ("Silver or better", "award_score(a.medal, a.points, c.short) IS NOT NULL"),
-    "gold": ("Gold medal or better (critics: 93+)",
-             "((c.kind = 'critic' AND a.points >= 93) OR (c.kind != 'critic' AND a.medal IN "
-             "('Gold', 'Grand Gold', 'Platinum', 'Trophy')))"),
+    "counted": ("Any medal or score", "award_score(a.medal, a.points, c.short) IS NOT NULL"),
+    "gold": ("Gold or better (worth 93+ points)", "award_score(a.medal, a.points, c.short) >= 93"),
     "90": ("90 points or more", "award_score(a.medal, a.points, c.short) >= 90"),
     "93": ("93 points or more", "award_score(a.medal, a.points, c.short) >= 93"),
     "95": ("95 points or more", "award_score(a.medal, a.points, c.short) >= 95"),
@@ -170,8 +168,8 @@ def competitions(conn) -> list[dict]:
     return _rows(conn, """
         SELECT c.short, c.name, c.kind, c.weight,
                COUNT(DISTINCT CASE WHEN award_score(a.medal, a.points, c.short) IS NOT NULL THEN b.wine_id END) AS wines,
-               COUNT(DISTINCT CASE WHEN (c.kind = 'critic' AND a.points >= 93) OR (c.kind != 'critic' AND
-                     a.medal IN ('Gold', 'Grand Gold', 'Platinum', 'Trophy')) THEN b.wine_id END) AS gold_wines,
+               COUNT(DISTINCT CASE WHEN award_score(a.medal, a.points, c.short) >= 93
+                     THEN b.wine_id END) AS gold_wines,
                MAX(a.year) AS latest_year
         FROM competition c
         JOIN award a ON a.competition_id = c.id
@@ -286,6 +284,7 @@ def wine(conn, wine_id: int) -> dict | None:
                    (wine_id,))
     for a in awards:
         a.update(award_origin(a))
+        a["counts_as"] = award_score(a["medal"], a["points"], a["short"])
     other_vintages = _rows(conn, """SELECT w2.id, w2.vintage, ws.overall AS score, ws.best_award
                                     FROM wine w2 JOIN wine_score ws ON ws.wine_id = w2.id
                                     WHERE w2.cuvee_id = ? AND w2.id != ? AND ws.overall IS NOT NULL

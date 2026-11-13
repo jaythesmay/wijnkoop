@@ -6,7 +6,8 @@ Weights (design review, Phase 2):
   1.0  Decanter World Wine Awards, International Wine Challenge, IWSC
   0.7  Concours Mondial de Bruxelles, Mundus Vini, well-known critics
   0.4  everything else
-Bronze and Commended medals are stored but count as no evidence.
+A medal counts as the middle of its own competition's points band: a "Gold" means 95-100 at the
+IWC but 85-89 at Gilbert & Gaillard, which is the IWC's bronze.
 """
 import re
 
@@ -53,20 +54,31 @@ MEDALS = [
     (r"brons|bronze", "Bronze"),
     (r"commended|eervolle\s+vermelding", "Commended"),
 ]
-# Score on the 100-point scale for a medal without points: the middle of each
-# competition's own points band. Bronze/Commended: no evidence.
-MEDAL_SCORE = {"Trophy": 97, "Platinum": 97, "Grand Gold": 95, "Gold": 92, "Silver": 88}
+# Score on the 100-point scale for a medal without points: the middle of each competition's own
+# points band, from its published rules (Nov 2026). The same word means very different things:
+# a gold at Gilbert & Gaillard (85-89) is a bronze at Decanter (86-89).
 MEDAL_SCORE_BY_COMPETITION = {
-    # Gold 95-100, Silver 90-94
-    "IWC": {"Trophy": 97, "Gold": 96, "Silver": 92},
-    "IWSC": {"Trophy": 97, "Gold": 96, "Silver": 92},
-    # Platinum 97-100, Gold 95-96, Silver 90-94
-    "DWWA": {"Trophy": 98, "Platinum": 97.5, "Gold": 95.5, "Silver": 92},
-    # OIV scale: Grand Gold 92+, Gold 85-91.9, Silver 82-84.9 (OIV points run lower)
-    "CMB": {"Trophy": 95, "Grand Gold": 94, "Gold": 90, "Silver": 87},
-    # Grand Gold 95+, Gold 90-94.9, Silver 85-89.9
-    "Mundus Vini": {"Grand Gold": 96, "Gold": 92, "Silver": 87.5},
+    # Gold 95-100, Silver 90-94, Bronze 85-89, Commended 80-84
+    "IWC": {"Trophy": 97, "Gold": 96, "Silver": 92, "Bronze": 87, "Commended": 82},
+    "IWSC": {"Trophy": 97, "Gold": 96, "Silver": 92, "Bronze": 87, "Commended": 82},
+    # Platinum 97-100, Gold 95-96, Silver 90-94, Bronze 86-89, Commended 83-85
+    "DWWA": {"Trophy": 98, "Platinum": 97.5, "Gold": 95.5, "Silver": 92, "Bronze": 87.5, "Commended": 84},
+    # Grand Gold 95+, Gold 90-94, Silver 85-89
+    "Mundus Vini": {"Grand Gold": 96, "Gold": 92, "Silver": 87},
+    # OIV scale: Grand Gold 92+, Gold 85-91, Silver 82-84
+    "CMB": {"Trophy": 95, "Grand Gold": 94, "Gold": 88, "Silver": 83},
+    "Berliner Wein Trophy": {"Grand Gold": 94, "Gold": 88, "Silver": 83},
+    # Double Gold 90+, Gold 85-89, Silver 83-84
+    "Gilbert & Gaillard": {"Grand Gold": 92, "Gold": 87, "Silver": 83.5},
 }
+# Any other competition: most small ones judge on the OIV scale (Grand Gold 92+, Gold 85-91,
+# Silver 82-84, Bronze 80-81). A commended without a known band is no evidence.
+MEDAL_SCORE = {"Trophy": 95, "Platinum": 95, "Grand Gold": 94, "Gold": 88, "Silver": 83, "Bronze": 81}
+# Critics on their own scale: Luca Maroni scores up to 99 and generously (a Tavernello got 94),
+# so his points count this much lower.
+CRITIC_OFFSET = {"Luca Maroni": -6}
+# Medals worth less than this many points count as no evidence (None: every medal counts).
+LOWEST_COUNTED = None
 
 POINTS_RE = re.compile(r"(\d{2,3}(?:[.,]\d)?)\s*(?:/\s*100|punten|points|pts|ptn|p\b|pt\b)")
 RANGE_RE = re.compile(r"\b(\d{2,3})\s*[-–]\s*(\d{2,3})\b(?!\s*[-–/]?\s*(?:19|20)\d{2})")
@@ -157,11 +169,13 @@ def parse_award_text(source: str, result: str = "") -> dict | None:
 
 def award_score(medal: str | None, points: float | None, competition: str | None = None) -> float | None:
     """Score on the 100-point scale, or None when the award is no evidence of quality."""
-    if medal in ("Bronze", "Commended"):
-        return None
     if points is not None:
-        return points
-    return MEDAL_SCORE_BY_COMPETITION.get(competition, {}).get(medal, MEDAL_SCORE.get(medal))
+        score = points + CRITIC_OFFSET.get(competition, 0)
+    else:
+        score = MEDAL_SCORE_BY_COMPETITION.get(competition, {}).get(medal, MEDAL_SCORE.get(medal))
+    if score is None or (LOWEST_COUNTED and score < LOWEST_COUNTED):
+        return None
+    return score
 
 
 def competition_id(con, comp) -> int:
