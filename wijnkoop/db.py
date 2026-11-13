@@ -195,6 +195,20 @@ CREATE TABLE IF NOT EXISTS same_wine_check (
     match_score REAL,
     PRIMARY KEY (cuvee_id, other_cuvee_id)
 );
+-- Results files Loes uploads herself as an official check (awards with source 'upload')
+CREATE TABLE IF NOT EXISTS award_upload (
+    id INTEGER PRIMARY KEY,
+    filename TEXT NOT NULL,
+    kind TEXT,
+    competition_id INTEGER REFERENCES competition(id),
+    year INTEGER,
+    uploaded_on TEXT,
+    how TEXT,
+    rows_read INTEGER,
+    awards INTEGER,
+    linked INTEGER,
+    to_review INTEGER
+);
 CREATE TABLE IF NOT EXISTS setting (
     key TEXT PRIMARY KEY,
     value TEXT

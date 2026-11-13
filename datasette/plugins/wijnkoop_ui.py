@@ -1,6 +1,6 @@
 """The everyday WijnKoop screens, served by Datasette next to the expert tables.
 
-Pages: / (home), /find, /search, /wine/<id>, /week, /watchlist, /order, /how.
+Pages: / (home), /find, /search, /wine/<id>, /week, /watchlist, /order, /how, /awards, /upload.
 The data comes from wijnkoop/ui.py; the HTML from datasette/templates/wk_*.html.
 """
 import os
@@ -11,6 +11,7 @@ from datasette.utils.asgi import Response
 from markupsafe import Markup
 
 from wijnkoop import ui
+from wijnkoop.awards import upload as award_upload
 
 DB = "wijnkoop"
 
@@ -91,6 +92,44 @@ async def awards(datasette, request):
     return await _page(datasette, request, "wk_awards.html", "Awards and critics", awards=rows)
 
 
+def _competitions(conn):
+    return [dict(r) for r in conn.execute("SELECT short, name FROM competition ORDER BY name")]
+
+
+async def upload(datasette, request):
+    """Load an official results file. The browser sends the file itself as the request body,
+    with its name, competition and year in the address."""
+    if request.method == "POST":
+        filename = (request.args.get("filename") or "upload").strip()[:200]
+        competition = (request.args.get("competition") or "").strip() or None
+        year = request.args.get("year") or ""
+        data = await request.post_body()
+        try:
+            report = await _write(datasette, award_upload.import_upload, filename, data, competition,
+                                  int(year) if year.isdigit() else None)
+        except Exception as e:  # unreadable file: say so on the page instead of a crash
+            return Response.json({"error": str(e) or e.__class__.__name__}, status=400)
+        return Response.json({"id": report["upload"]["id"], "awards": report["upload"]["awards"]})
+    done = await _read(datasette, award_upload.uploads)
+    comps = await _read(datasette, _competitions)
+    return await _page(datasette, request, "wk_upload.html", "Check awards with a results file",
+                       uploads=done, competitions=comps)
+
+
+async def upload_report(datasette, request):
+    upload_id = int(request.url_vars["upload_id"])
+    if request.method == "POST":
+        post = await request.post_vars()
+        if post.get("delete"):
+            await _write(datasette, award_upload.delete_upload, upload_id)
+        return Response.redirect("/upload")
+    report = await _read(datasette, award_upload.upload_report, upload_id)
+    if not report:
+        return Response.html("<p>This upload is not known. <a href='/upload'>Uploads</a></p>", status=404)
+    return await _page(datasette, request, "wk_upload_report.html", f"Upload: {report['upload']['filename']}",
+                       **report)
+
+
 async def how(datasette, request):
     if request.method == "POST":
         post = await request.post_vars()
@@ -147,6 +186,8 @@ def register_routes():
         (r"^/watchlist$", watchlist),
         (r"^/awards$", awards),
         (r"^/how$", how),
+        (r"^/upload$", upload),
+        (r"^/upload/(?P<upload_id>\d+)$", upload_report),
         (r"^/order$", order),
         (r"^/order/add$", order_add),
         (r"^/watch$", watch),

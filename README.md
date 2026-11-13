@@ -22,6 +22,8 @@ Made for a phone, in the shop as well as at home:
 | `/watchlist` | Wines you follow; their changes come first in the e-mail |
 | `/order` | Order list per shop with promotions, delivery costs and what is missing for free delivery |
 | `/how` | How the score, the price-for-quality label and deals are worked out |
+| `/awards` | Every competition and critic, with the wines that won silver or gold |
+| `/upload` | Load an official results file (any competition, any format) to add its awards and check the shops' claims |
 | `/wijnkoop` | The expert tables and saved queries (Datasette) |
 
 The pages are a Datasette plugin (`datasette/plugins/wijnkoop_ui.py`) with templates in
@@ -66,6 +68,12 @@ and open `http://<nas tailscale name>:8001`.
 - Award results: IWC (with points) and Concours Mondial are read automatically, weekly in
   the award seasons (March, late May to June, September, late November) and monthly otherwise.
   Decanter and IWSC are only known from what shops print, because their sites forbid or block robots.
+- Results files you load yourself (`/upload` or `import-results`): a saved web page, Excel, CSV, PDF,
+  JSON or text, from any competition or critic. WijnKoop finds the columns from their header or their
+  contents (or, for plain text, from headings such as "GOLD" or a medal line under each wine), takes the
+  competition and year from the file name or the title, links the wines and lists per wine whether the
+  shop's claim is confirmed, different, or missing from the official list. These awards count like the
+  others; deleting the upload removes them again. Scanned PDFs (pictures of text) cannot be read.
 
 ## Commands (run inside the container)
 | Command | What it does |
@@ -77,6 +85,7 @@ and open `http://<nas tailscale name>:8001`.
 | `python -m wijnkoop check --shop vindict --count 3` | Reads 3 pages of one shop and prints what it understood |
 | `python -m wijnkoop awards` | Reads IWC and Concours Mondial results now and links them to the shop wines |
 | `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
+| `python -m wijnkoop import-results results.xlsx` | Reads an official results file you downloaded (`--competition DWWA --year 2025` if the file does not say) |
 | `python -m wijnkoop mail-setup` | Sets up the weekly e-mail (Gmail app password, stored only in `/data/mail.ini`) and sends a test |
 | `python -m wijnkoop vivino-setup` | Saves a Brave Search API key (only in `/data/brave.ini`) for the Vivino test; `--forget` deletes the key and every stored Vivino rating |
 | `python -m wijnkoop vivino-test --count 10` | Looks up the Vivino rating of the 10 best-scored wines via Brave (never opens vivino.com; at most 900 searches a month) |
