@@ -112,7 +112,8 @@ def _wine_scores(con, now):
 
     con.execute("DELETE FROM wine_score")
     wines = con.execute(
-        """SELECT w.id, w.cuvee_id, c.producer_key FROM wine w LEFT JOIN cuvee c ON c.id = w.cuvee_id
+        """SELECT w.id, w.cuvee_id, c.producer_key, w.name || COALESCE(' ' || w.vintage, '') AS label
+           FROM wine w LEFT JOIN cuvee c ON c.id = w.cuvee_id
            WHERE w.id IN (SELECT wine_id FROM offer WHERE is_current = 1)
               OR w.id IN (SELECT wine_id FROM award_match)"""
     ).fetchall()
@@ -125,12 +126,12 @@ def _wine_scores(con, now):
         best = max(mine, key=lambda x: x[0])[2] if mine else None
         con.execute(
             """INSERT INTO wine_score (wine_id, n_awards, evidence, overall, best_award, cuvee_vintages,
-                                       cuvee_avg, producer_wines, producer_avg, updated, gold)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                       cuvee_avg, producer_wines, producer_avg, updated, gold, wine)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (w["id"], len(mine), round(sum(x[1] for x in mine), 2), wine_overall.get(w["id"]), best,
              len(other_vintages), round(statistics.mean(other_vintages), 1) if other_vintages else None,
              len(other_wines), round(statistics.mean(other_wines), 1) if other_wines else None, now,
-             int(w["id"] in gold)),
+             int(w["id"] in gold), w["label"]),
         )
     return wine_overall
 
@@ -155,8 +156,9 @@ def recompute(con, today: dt.date | None = None):
     offers = con.execute(
         """SELECT o.id, o.wine_id, o.shop_id, o.price_per_75cl, o.was_price, o.price, o.volume_cl,
                   o.effective_price_per_75cl, o.in_stock_online, s.name AS shop,
-                  s.delivery_cost, s.free_delivery_from
-           FROM offer o JOIN shop s ON s.id = o.shop_id
+                  s.delivery_cost, s.free_delivery_from,
+                  w.name || COALESCE(' ' || w.vintage, '') || ' (' || s.name || ')' AS label
+           FROM offer o JOIN shop s ON s.id = o.shop_id JOIN wine w ON w.id = o.wine_id
            WHERE o.is_current = 1 AND o.gone_since IS NULL"""
     ).fetchall()
     history = defaultdict(list)
@@ -211,10 +213,11 @@ def recompute(con, today: dt.date | None = None):
             value = round(score - (math.log(eff) - c) / d, 1)
         con.execute(
             """INSERT INTO offer_score (offer_id, bottle_price_at_6, order_of_6, delivery_at_6, reference_price,
-                                        is_deal, deal_reason, value, fair_price, price_quality, verdict, updated)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                        is_deal, deal_reason, value, fair_price, price_quality, verdict, updated,
+                                        wine)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (o["id"], bottle, total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
-             value, fair, ratio, verdict(ratio), now),
+             value, fair, ratio, verdict(ratio), now, o["label"]),
         )
     con.commit()
     return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),

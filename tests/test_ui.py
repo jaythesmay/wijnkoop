@@ -156,7 +156,8 @@ def test_pages_render(con, tmp_path):
 
     async def run():
         out = {}
-        for path in ["/", "/find?gold=1", "/search?q=muga", f"/wine/{wine_id}", "/week", "/watchlist", "/order",
+        for path in ["/", "/find?gold=1", "/awards", "/find?award=IWC&award_result=95", "/wijnkoop/best_buys",
+                     "/wijnkoop/award_match", "/search?q=muga", f"/wine/{wine_id}", "/week", "/watchlist", "/order",
                      "/how", "/wine/9999"]:
             r = await ds.client.get(path)
             out[path] = (r.status_code, r.text)
@@ -169,3 +170,20 @@ def test_pages_render(con, tmp_path):
     assert "this score usually costs" in pages["/find?gold=1"][1]
     assert "Spain" in pages["/"][1] and "Spanje" not in pages["/"][1]
     assert "35%" in pages["/how"][1]
+    assert "IWC 2025 Gold 95 pts" in pages["/find?award=IWC&award_result=95"][1]
+    assert f'<a href="/wine/{wine_id}">{wine_id} · Bodegas Muga Reserva 2021</a>' in pages["/wijnkoop/best_buys"][1]
+    assert "Bodegas Muga Reserva 2021</a>" in pages["/wijnkoop/award_match"][1]
+
+
+def test_award_filters(con):
+    comps = {c["short"]: c for c in ui.competitions(con)}
+    assert comps["IWC"]["wines"] == 1 and comps["IWC"]["gold_wines"] == 1
+    assert comps["Suckling"]["gold_wines"] == 1 and comps["Mundus Vini"]["gold_wines"] == 0
+    f = ui.find(con, {"award": "IWC", "award_result": "95"})
+    assert [c["wine"] for c in f["cards"]] == ["Bodegas Muga Reserva"]
+    assert f["cards"][0]["matched_award"] == "IWC 2025 Gold 95 pts"
+    assert ui.find(con, {"award": "IWC", "award_result": "95", "award_year": "2024"})["total"] == 0
+    assert {c["wine"] for c in ui.find(con, {"award_result": "gold"})["cards"]} == {
+        "Bodegas Muga Reserva", "Domaine Laroche Chablis"}
+    assert ui.find(con, {"award": "Mundus Vini"})["cards"][0]["wine"] == "Bodegas Olarra Crianza"
+    assert ui.options(con)["award_years"] == [2025]

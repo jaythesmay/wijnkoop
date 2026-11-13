@@ -261,3 +261,11 @@ def test_first_phase2_read_is_a_baseline(tmp_path):
     save_product(con, 1, page("100137"), "2026-11-16")  # price and promotion differ from phase 1
     kinds = {r[0] for r in con.execute("SELECT kind FROM event")}
     assert kinds == {"new_award"}
+
+
+def test_medal_word_in_competition_name():
+    from wijnkoop.reference import parse_award_text
+    a = parse_award_text("Berliner Wein Trophy 2025", "Gold")
+    assert a["competition"][0] == "Berliner Wein Trophy" and a["medal"] == "Gold"
+    assert parse_award_text("Berliner Wein Trophy 2024", "Zilver")["medal"] == "Silver"
+    assert parse_award_text("IWC 2025", "Trophy")["medal"] == "Trophy"

@@ -155,7 +155,8 @@ CREATE TABLE IF NOT EXISTS wine_score (
     producer_wines INTEGER,
     producer_avg REAL,
     updated TEXT,
-    gold INTEGER DEFAULT 0
+    gold INTEGER DEFAULT 0,
+    wine TEXT
 );
 CREATE TABLE IF NOT EXISTS offer_score (
     offer_id INTEGER PRIMARY KEY REFERENCES offer(id),
@@ -169,7 +170,8 @@ CREATE TABLE IF NOT EXISTS offer_score (
     fair_price REAL,
     price_quality REAL,
     verdict TEXT,
-    updated TEXT
+    updated TEXT,
+    wine TEXT
 );
 CREATE TABLE IF NOT EXISTS setting (
     key TEXT PRIMARY KEY,
@@ -278,6 +280,7 @@ SELECT
     a.year,
     a.medal,
     a.points,
+    w.id AS wine_id,
     w.name AS wine,
     w.vintage,
     w.colour,
@@ -405,8 +408,8 @@ def _backup(con, path, version):
 
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
-    "wine_score": [("gold", "INTEGER DEFAULT 0")],
-    "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT")],
+    "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
+    "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT")],
 }
 
 

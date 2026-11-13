@@ -39,7 +39,8 @@
       <small>this score usually costs {{ c.fair_price|money }}</small></div>
     {% endif %}
   </div>
-  {% if c.best_award %}<div class="award">🏅 {{ c.best_award }}{% if c.awards and c.awards > 1 %} <span class="muted">+{{ c.awards - 1 }} more</span>{% endif %}</div>{% endif %}
+  {% if c.matched_award %}<div class="award">🏅 {{ c.matched_award }}</div>
+  {% elif c.best_award %}<div class="award">🏅 {{ c.best_award }}{% if c.awards and c.awards > 1 %} <span class="muted">+{{ c.awards - 1 }} more</span>{% endif %}</div>{% endif %}
   {% if c.promotion or c.tags %}
   <div class="tags">
     {% if c.promotion %}<span class="tag promo">{{ c.promotion }}</span>{% endif %}

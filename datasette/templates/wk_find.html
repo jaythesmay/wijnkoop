@@ -21,6 +21,20 @@
       <div><label for="grape">Grape</label><input type="text" id="grape" name="grape" value="{{ args.grape or '' }}" placeholder="e.g. Syrah"></div>
       <div><label for="min_score">Min score</label><input type="number" inputmode="decimal" step="1" min="80" max="100" id="min_score" name="min_score" value="{{ args.min_score or '' }}" placeholder="e.g. 92"></div>
     </div>
+    <div class="row2">
+      <div><label for="award">Award or critic</label>
+        <select id="award" name="award"><option value="">Any</option>
+        {% for a in opts.awards %}<option value="{{ a.short }}" {{ 'selected' if args.award == a.short }}>{{ a.short }} ({{ a.wines }})</option>{% endfor %}</select></div>
+      <div><label for="award_result">Result</label>
+        <select id="award_result" name="award_result"><option value="">Any</option>
+        {% for k, v in opts.award_results.items() %}<option value="{{ k }}" {{ 'selected' if args.award_result == k }}>{{ v }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="row2">
+      <div><label for="award_year">Award year</label>
+        <select id="award_year" name="award_year"><option value="">Any</option>
+        {% for y in opts.award_years %}<option {{ 'selected' if args.award_year == y|string }}>{{ y }}</option>{% endfor %}</select></div>
+      <div style="display:flex;align-items:flex-end"><a class="small" href="/awards">All awards and critics</a></div>
+    </div>
     <div class="checks">
       <label><input type="checkbox" name="gold" value="1" {{ 'checked' if args.gold }}> Gold medal or better</label>
       <label><input type="checkbox" name="deal" value="1" {{ 'checked' if args.deal }}> Deals only</label>
