@@ -50,7 +50,7 @@ and open `http://<nas tailscale name>:8001`.
   read with a headless browser (Chromium, in the image), 20 s apart as their robots.txt asks. It
   loads only the shop's own site (no images, trackers or cookie banners). Their medals come from
   the medal images; packages, cases and bag-in-box are skipped; pre-orders count as not in stock.
-  This needs more memory on the NAS (about 300 MB while those two shops are read).
+  While those two shops are read the browser uses up to about 500 MB of memory on the NAS.
 - Runs every Monday at 01:00 (change with `WIJNKOOP_RUN_WEEKDAY` / `WIJNKOOP_RUN_HOUR`).
 - Personal, non-commercial use only.
 - Keeps every vintage of a shop page apart: a new vintage on the same page starts a new offer.
