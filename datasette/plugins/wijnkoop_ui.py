@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 from datasette import hookimpl
 from datasette.utils.asgi import Response
+from markupsafe import Markup
 
 from wijnkoop import ui
 
@@ -50,7 +51,8 @@ async def home(datasette, request):
 
 async def find(datasette, request):
     args = {k: request.args.get(k) for k in ("max_price", "min_price", "colour", "country", "grape", "gold",
-                                              "min_score", "deal", "in_stock", "unscored", "sort")}
+                                              "min_score", "deal", "in_stock", "unscored", "sort",
+                                              "award", "award_result", "award_year")}
     data = await _read(datasette, ui.find, args)
     opts = await _read(datasette, ui.options)
     active = {k: v for k, v in args.items() if v}
@@ -82,6 +84,11 @@ async def week(datasette, request):
 async def watchlist(datasette, request):
     cards = await _read(datasette, ui.watchlist)
     return await _page(datasette, request, "wk_watchlist.html", "Watchlist", cards=cards)
+
+
+async def awards(datasette, request):
+    rows = await _read(datasette, ui.competitions)
+    return await _page(datasette, request, "wk_awards.html", "Awards and critics", awards=rows)
 
 
 async def how(datasette, request):
@@ -132,11 +139,50 @@ def register_routes():
         (r"^/wine/(?P<wine_id>\d+)$", wine),
         (r"^/week$", week),
         (r"^/watchlist$", watchlist),
+        (r"^/awards$", awards),
         (r"^/how$", how),
         (r"^/order$", order),
         (r"^/order/add$", order_add),
         (r"^/watch$", watch),
     ]
+
+
+# In the expert tables, show which wine, offer or award an id stands for, linked to its page.
+ID_LABELS = {
+    "wine_id": ("SELECT name || COALESCE(' ' || vintage, '') FROM wine WHERE id = ?", "/wine/{}"),
+    "offer_id": ("SELECT w.name || COALESCE(' ' || w.vintage, '') || ' (' || s.name || ')' FROM offer o "
+                 "JOIN wine w ON w.id = o.wine_id JOIN shop s ON s.id = o.shop_id WHERE o.id = ?", "/wine/{}"),
+    "award_id": ("SELECT raw_text FROM award WHERE id = ?", None),
+}
+
+
+@hookimpl
+def render_cell(value, column, table, database, datasette):
+    if column not in ID_LABELS or database != DB or table in ("wine", "offer", "award"):
+        return None
+    if isinstance(value, dict):  # a foreign key Datasette already expanded
+        value = value.get("value")
+    if not isinstance(value, int):
+        return None
+
+    async def inner():
+        sql, link = ID_LABELS[column]
+        db = datasette.get_database(DB)
+        row = (await db.execute(sql, [value])).first()
+        if not row or row[0] is None:
+            return None
+        target = link
+        if column == "offer_id":
+            wine_id = (await db.execute("SELECT wine_id FROM offer WHERE id = ?", [value])).first()
+            target = link.format(wine_id[0]) if wine_id else None
+        elif link:
+            target = link.format(value)
+        label = f"{value} · {row[0]}"
+        if target:
+            return Markup('<a href="{}">{}</a>').format(target, label)
+        return Markup("{}").format(label)
+
+    return inner
 
 
 def _verdict_class(verdict):

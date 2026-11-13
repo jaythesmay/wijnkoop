@@ -1,0 +1,17 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Awards and critics</h1>
+<p class="lead">Every competition and critic that rated a wine you can buy now. Tap a number to see those wines, best value first.</p>
+{% if awards %}
+<div class="panel"><table class="list">
+<tr><th>Award</th><th class="num">Silver+</th><th class="num">Gold+</th></tr>
+{% for a in awards %}
+<tr>
+  <td><b>{{ a.short }}</b><div class="meta">{{ a.name }} · {{ 'critic' if a.kind == 'critic' else 'competition' }} · counts {{ (a.weight * 100)|round|int }}%{% if a.latest_year %} · latest {{ a.latest_year }}{% endif %}</div></td>
+  <td class="num"><a href="/find?award={{ a.short|urlencode }}&award_result=counted">{{ a.wines }}</a></td>
+  <td class="num">{% if a.gold_wines %}<a href="/find?award={{ a.short|urlencode }}&award_result=gold">{{ a.gold_wines }}</a>{% else %}<span class="muted">0</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% else %}<div class="empty">No awards linked to shop wines yet.</div>{% endif %}
+{% endblock %}

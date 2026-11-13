@@ -20,7 +20,7 @@ COMPETITIONS = [
      r"international\s+wine\s+(and|&)\s+spirits?\s+competition|\biwsc\b"),
     ("CMB", "Concours Mondial de Bruxelles", "competition", 0.7, r"concours\s+mondial|\bcmb\b"),
     ("Mundus Vini", "Mundus Vini", "competition", 0.7, r"mundus\s+vini"),
-    ("Berliner Wein Trophy", "Berliner Wein Trophy", "competition", 0.4, r"berliner\s+wein"),
+    ("Berliner Wein Trophy", "Berliner Wein Trophy", "competition", 0.4, r"berliner\s+wein(\s+troph(y|ies))?"),
     ("Gilbert & Gaillard", "Gilbert & Gaillard", "competition", 0.4, r"gilbert\s*(&|et|and)\s*gaillard"),
     ("Concours Général Agricole", "Concours Général Agricole Paris", "competition", 0.4,
      r"concours\s+general\s+agricole|concours\s+agricole"),
@@ -96,9 +96,15 @@ def parse_award_text(source: str, result: str = "") -> dict | None:
     text = f"{source} {result}".strip()
     plain = _plain(text)
     comp = find_competition(text)
+    # The competition's own name can hold a medal word ("Berliner Wein Trophy"): leave it out.
+    medal_text = plain
+    if comp:
+        own = next((p for short, _, _, _, p in COMPETITIONS if short == comp[0]), None)
+        if own:
+            medal_text = re.sub(own, " ", plain)
     medal = None
     for pattern, name in MEDALS:
-        if re.search(pattern, plain):
+        if re.search(pattern, medal_text):
             medal = name
             break
     points = None
@@ -143,6 +149,15 @@ def competition_id(con, comp) -> int:
     return con.execute("SELECT id FROM competition WHERE name=?", (name,)).fetchone()[0]
 
 
+def repair_shop_awards(con):
+    """Re-read medals of awards taken from shop pages, after a fix in parse_award_text."""
+    rows = con.execute("SELECT id, raw_text, medal FROM award WHERE source = 'shop page' AND raw_text IS NOT NULL")
+    for award_id, raw, medal in rows.fetchall():
+        parsed = parse_award_text(raw)
+        if parsed and parsed["medal"] != medal:
+            con.execute("UPDATE OR IGNORE award SET medal = ? WHERE id = ?", (parsed["medal"], award_id))
+
+
 def seed(con):
     for short, name, kind, weight, _ in COMPETITIONS:
         con.execute(
@@ -151,6 +166,7 @@ def seed(con):
                  weight=excluded.weight""",
             (name, short, kind, weight))
     competition_id(con, OTHER_COMPETITION)
+    repair_shop_awards(con)
     for name, site, cost, free_from, min_order, note in SHOPS:
         con.execute(
             """INSERT INTO shop (name, website, delivery_cost, free_delivery_from, min_order, delivery_note)

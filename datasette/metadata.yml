@@ -151,8 +151,8 @@ databases:
           Competition results that look like a wine in the shop, but not certainly. They are not counted
           in the score. Tell Claude which ones are right or wrong and the matching gets better.
         sql: |-
-          SELECT m.match_score, a.raw_text AS award, w.name AS shop_wine, w.vintage, w.producer AS shop_producer,
-                 a.source_url
+          SELECT m.match_score, m.award_id, a.raw_text AS award, m.wine_id, w.name AS shop_wine, w.vintage,
+                 w.producer AS shop_producer, a.source_url
           FROM award_match m JOIN award a ON a.id = m.award_id JOIN wine w ON w.id = m.wine_id
           WHERE m.confirmed IS NULL
           ORDER BY m.match_score DESC

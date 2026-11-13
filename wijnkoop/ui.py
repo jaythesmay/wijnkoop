@@ -11,6 +11,7 @@ from rapidfuzz import fuzz, process
 
 from .deals import line_cost, parse_deal
 from .normalize import norm
+from .reference import award_score
 
 COLOURS = {"red": "Red", "white": "White", "rosé": "Rosé"}
 # Gall writes country names in Dutch; the screens are in English.
@@ -41,6 +42,34 @@ CARD_COLUMNS = """offer_id, wine_id, wine, vintage, producer, colour, country, s
     normal_price, promotion, deal, deal_reason, score, awards, best_award, value, fair_price, price_quality,
     verdict, gold_or_better, other_vintages_awarded, other_vintages_avg, producer_wines_awarded, producer_avg,
     online_in_stock, url, grapes, category"""
+
+
+# Filters on one competition or critic: what result counts.
+AWARD_RESULTS = {
+    "counted": ("Silver or better", "award_score(a.medal, a.points, c.short) IS NOT NULL"),
+    "gold": ("Gold medal or better (critics: 93+)",
+             "((c.kind = 'critic' AND a.points >= 93) OR (c.kind != 'critic' AND a.medal IN "
+             "('Gold', 'Grand Gold', 'Platinum', 'Trophy')))"),
+    "90": ("90 points or more", "award_score(a.medal, a.points, c.short) >= 90"),
+    "93": ("93 points or more", "award_score(a.medal, a.points, c.short) >= 93"),
+    "95": ("95 points or more", "award_score(a.medal, a.points, c.short) >= 95"),
+}
+
+
+def _award_sql(conn, args) -> tuple[str, list] | None:
+    """SQL condition on award a / competition c for the award filters, or None when not used."""
+    short, result, year = args.get("award"), args.get("award_result"), args.get("award_year")
+    if not (short or result in AWARD_RESULTS or year):
+        return None
+    conn.create_function("award_score", 3, award_score, deterministic=True)
+    cond, params = ["COALESCE(m.confirmed, 1) = 1", AWARD_RESULTS.get(result, AWARD_RESULTS["counted"])[1]], []
+    if short:
+        cond.append("c.short = ?")
+        params.append(short)
+    if year and str(year).isdigit():
+        cond.append("a.year = ?")
+        params.append(int(year))
+    return " AND ".join(cond), params
 
 
 def _rows(conn, sql, params=()):
@@ -102,8 +131,29 @@ def home(conn) -> dict:
 def options(conn) -> dict:
     countries = [r[0] for r in conn.execute(
         "SELECT country FROM best_buys WHERE country IS NOT NULL GROUP BY country ORDER BY COUNT(*) DESC")]
-    return {"colours": COLOURS, "countries": {c: country_en(c) for c in countries}, "sorts": {"value": "Best value", "score": "Best score",
-                                                                  "price": "Lowest price"}}
+    return {"colours": COLOURS, "countries": {c: country_en(c) for c in countries},
+            "sorts": {"value": "Best value", "score": "Best score", "price": "Lowest price"},
+            "awards": competitions(conn), "award_results": {k: v[0] for k, v in AWARD_RESULTS.items()},
+            "award_years": [r[0] for r in conn.execute(
+                "SELECT DISTINCT a.year FROM award a JOIN award_match m ON m.award_id = a.id "
+                "WHERE a.year IS NOT NULL ORDER BY a.year DESC")]}
+
+
+def competitions(conn) -> list[dict]:
+    """Competitions and critics with how many wines for sale they gave a counted award."""
+    conn.create_function("award_score", 3, award_score, deterministic=True)
+    return _rows(conn, """
+        SELECT c.short, c.name, c.kind, c.weight,
+               COUNT(DISTINCT CASE WHEN award_score(a.medal, a.points, c.short) IS NOT NULL THEN b.wine_id END) AS wines,
+               COUNT(DISTINCT CASE WHEN (c.kind = 'critic' AND a.points >= 93) OR (c.kind != 'critic' AND
+                     a.medal IN ('Gold', 'Grand Gold', 'Platinum', 'Trophy')) THEN b.wine_id END) AS gold_wines,
+               MAX(a.year) AS latest_year
+        FROM competition c
+        JOIN award a ON a.competition_id = c.id
+        JOIN award_match m ON m.award_id = a.id AND COALESCE(m.confirmed, 1) = 1
+        JOIN best_buys b ON b.wine_id = m.wine_id
+        GROUP BY c.id HAVING wines > 0
+        ORDER BY c.weight DESC, wines DESC""")
 
 
 def _float(v):
@@ -143,9 +193,21 @@ def find(conn, args: dict, limit: int = 60) -> dict:
         where.append("online_in_stock IS NOT 'no'")
     if not args.get("unscored"):
         where.append("score IS NOT NULL")
+    extra, extra_params = "", []
+    award = _award_sql(conn, args)
+    if award:
+        cond, aparams = award
+        where.append(f"""wine_id IN (SELECT m.wine_id FROM award_match m JOIN award a ON a.id = m.award_id
+                         JOIN competition c ON c.id = a.competition_id WHERE {cond})""")
+        params += aparams
+        extra = f""", (SELECT GROUP_CONCAT(c.short || COALESCE(' ' || a.year, '') || COALESCE(' ' || a.medal, '')
+                        || COALESCE(printf(' %g pts', a.points), ''), '; ')
+                      FROM award_match m JOIN award a ON a.id = m.award_id JOIN competition c ON c.id = a.competition_id
+                      WHERE m.wine_id = best_buys.wine_id AND {cond}) AS matched_award"""
+        extra_params = aparams
     sort = SORTS.get(args.get("sort"), SORTS["value"])
-    rows = _rows(conn, f"SELECT {CARD_COLUMNS} FROM best_buys WHERE {' AND '.join(where)} ORDER BY {sort} "
-                       f"LIMIT {int(limit)}", params)
+    rows = _rows(conn, f"SELECT {CARD_COLUMNS}{extra} FROM best_buys WHERE {' AND '.join(where)} ORDER BY {sort} "
+                       f"LIMIT {int(limit)}", extra_params + params)
     total = conn.execute(f"SELECT COUNT(*) FROM best_buys WHERE {' AND '.join(where)}", params).fetchone()[0]
     return {"cards": _decorate(conn, rows), "total": total}
 
