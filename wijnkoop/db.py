@@ -463,7 +463,7 @@ def _add_later_columns(con):
     con.commit()
 
 
-BUSY_TIMEOUT = 120  # seconds
+BUSY_TIMEOUT = 300  # seconds: a shop run's scores or an upload can hold the database a while
 
 
 def connect(path=None):

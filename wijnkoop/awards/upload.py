@@ -20,6 +20,7 @@ import html as htmllib
 import io
 import json
 import re
+import sqlite3
 import zipfile
 from collections import Counter
 
@@ -489,7 +490,12 @@ def import_upload(con, filename: str, data: bytes, competition: str | None = Non
         raise
     from ..scores import recompute
 
-    recompute(con)
+    try:
+        recompute(con)
+    except sqlite3.OperationalError:
+        # A shop run holds the database for a long time: the awards are saved, and that run
+        # computes the scores again when it finishes.
+        con.rollback()
     return upload_report(con, report)
 
 
