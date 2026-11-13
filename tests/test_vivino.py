@@ -83,3 +83,40 @@ def test_key_file(tmp_path):
     vivino.save_key(" abc123 ", path)
     assert vivino.load_key(path) == "abc123"
     assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_prices_in_euros_only():
+    assert vivino._price_from_text("Average rating 4.3 based on 2,150 ratings. Buy for € 29,95 per bottle") == 29.95
+    assert vivino._price_from_text("Shipping €4.95. Average price: €18.50") == 18.5  # next to "price" wins
+    assert vivino._price_from_text("Prijs 12,99 € bij 6 flessen") == 12.99
+    assert vivino._price_from_text("Average price $25.99, 4.1 stars, 20% off") is None
+    assert vivino._price_from_text("€1 shipping") is None  # too low to be a bottle
+    result = brave([
+        {"title": "Catena Zapata Malbec Argentino | Vivino", "url": "https://www.vivino.com/nl/x/w/1869",
+         "description": "Rated 4.3 out of 5", "product": {"offers": [{"price": "31.50", "priceCurrency": "EUR"}]}},
+        {"title": "Catena Malbec | Vivino", "url": "https://www.vivino.com/US/en/y/w/1873",
+         "description": "Rated 3.9 out of 5", "product": {"offers": {"price": "19.99", "priceCurrency": "USD"}}},
+    ])
+    c = vivino.candidates(result)
+    assert [x["price"] for x in c] == [31.5, None]
+
+
+def test_look_up_stores_price_and_old_tables_get_the_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(vivino.SCHEMA.replace(",\n    price REAL", ""))  # a database from before prices
+    old.close()
+    con = db.connect(path)
+    assert "price" in {r[1] for r in con.execute("PRAGMA table_info(vivino_rating)")}
+    g = GallProduct(url="https://www.gall.nl/catena-75cl-100700.html", product_id="100700",
+                    title="Catena Zapata Malbec Argentino", colour="red", volume_cl=75, price=29.99,
+                    in_stock_online=True, specs={"vintage": "2020", "producer": "Catena Zapata"})
+    save_product(con, 1, g, TODAY.isoformat())
+    wine_id = con.execute("SELECT id FROM wine").fetchone()[0]
+    priced = brave([{"title": "Catena Zapata Malbec Argentino | Vivino", "url": "https://www.vivino.com/nl/x/w/1869",
+                     "description": "Malbec uit Mendoza. Gemiddelde prijs € 27,50."}])
+    row = vivino.look_up(con, "secret", wine_id, client=FakeHttp(priced), today=TODAY)
+    assert row["price"] == 27.5 and row["rating"] is None
+    assert ui.wine(con, wine_id)["vivino"]["rating"]["price"] == 27.5
