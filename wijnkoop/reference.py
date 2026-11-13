@@ -38,6 +38,8 @@ COMPETITIONS = [
     ("Gambero Rosso", "Gambero Rosso", "critic", 0.7, r"gambero\s+rosso"),
     ("Peñín", "Guía Peñín", "critic", 0.7, r"penin"),
     ("Luca Maroni", "Luca Maroni", "critic", 0.4, r"maroni"),
+    ("Perswijn", "Perswijn", "critic", 0.4, r"perswijn"),
+    ("Hamersma", "De Grote Hamersma", "critic", 0.4, r"hamersma"),
 ]
 OTHER_COMPETITION = ("Other", "Other competition or critic", "competition", 0.4)
 
@@ -74,6 +76,8 @@ YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
 SHOPS = [
     ("Gall & Gall", "https://www.gall.nl", 4.95, 55.0, 20.0,
      "EUR 4.95 for orders of EUR 20 to 55, free from EUR 55 (confirmed by Loes, Nov 2026)."),
+    ("Vindict", "https://www.vindict.nl", None, 30.0, None,
+     "Free delivery from EUR 30 (vindict.nl, Nov 2026); the cost below that is not published."),
 ]
 
 

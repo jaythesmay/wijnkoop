@@ -9,6 +9,8 @@ from .normalize import cuvee_key, norm, wine_key
 from .reference import competition_id, parse_award_text
 from .shops import gall
 
+AUTO, REVIEW = 88, 75  # same limits as for awards (awards/importer.py)
+
 log = logging.getLogger("wijnkoop")
 
 
@@ -50,6 +52,48 @@ def _upsert_cuvee(con, p: gall.GallProduct) -> int:
     return con.execute("SELECT id FROM cuvee WHERE norm_key=?", (key,)).fetchone()["id"]
 
 
+def _resolve_cuvee(con, p: gall.GallProduct, shop_id: int, matcher=None) -> int:
+    """The cuvee for this shop product. A wine already known from ANOTHER shop under a slightly
+    different name is recognised (same producer, nearly the same name) and reused, so prices of
+    the same wine in different shops can be compared."""
+    key = cuvee_key(p.title)
+    row = con.execute("SELECT cuvee_id FROM cuvee_alias WHERE norm_key=?", (key,)).fetchone()
+    if row:
+        return row["cuvee_id"]
+    if con.execute("SELECT 1 FROM cuvee WHERE norm_key=?", (key,)).fetchone() or matcher is None:
+        return _upsert_cuvee(con, p)
+    cid, score = matcher.best({"producer": p.specs.get("producer"), "name": p.title, "colour": p.colour})
+    if cid and score >= AUTO:
+        con.execute("INSERT OR IGNORE INTO cuvee_alias (norm_key, cuvee_id, name, shop_id, match_score) "
+                    "VALUES (?,?,?,?,?)", (key, cid, p.title, shop_id, round(score, 1)))
+        return cid
+    new_id = _upsert_cuvee(con, p)
+    if cid and score >= REVIEW:
+        con.execute("INSERT OR IGNORE INTO same_wine_check (cuvee_id, other_cuvee_id, match_score) VALUES (?,?,?)",
+                    (new_id, cid, round(score, 1)))
+    return new_id
+
+
+def _wine_for(con, p: gall.GallProduct, cuvee_id: int, vintage: int | None) -> int:
+    """The wine row for this cuvee and vintage; created when it does not exist yet."""
+    row = con.execute("SELECT id FROM wine WHERE cuvee_id=? AND COALESCE(vintage, 0)=COALESCE(?, 0) "
+                      "ORDER BY id LIMIT 1", (cuvee_id, vintage)).fetchone()
+    if row and con.execute("SELECT 1 FROM cuvee_alias WHERE norm_key=? AND cuvee_id=?",
+                           (cuvee_key(p.title), cuvee_id)).fetchone():
+        return row["id"]  # the same wine from another shop: keep the first shop's details
+    return _upsert_wine(con, p, cuvee_id, vintage) if not row else _upsert_wine_by_id(con, p, row["id"])
+
+
+def _upsert_wine_by_id(con, p: gall.GallProduct, wine_id: int) -> int:
+    con.execute(
+        """UPDATE wine SET producer=COALESCE(?, producer), colour=COALESCE(?, colour), country=COALESCE(?, country),
+             region=COALESCE(?, region), grapes=COALESCE(?, grapes), style=COALESCE(?, style),
+             alcohol=COALESCE(?, alcohol) WHERE id=?""",
+        (p.specs.get("producer"), p.colour, p.specs.get("country"), p.specs.get("region"), p.specs.get("grapes"),
+         p.specs.get("style"), gall._to_float(p.specs.get("alcohol")), wine_id))
+    return wine_id
+
+
 def _upsert_wine(con, p: gall.GallProduct, cuvee_id: int, vintage: int | None) -> int:
     key = wine_key(p.title, vintage)
     con.execute(
@@ -73,21 +117,30 @@ def _upsert_wine(con, p: gall.GallProduct, cuvee_id: int, vintage: int | None) -
 
 
 def _save_awards(con, p: gall.GallProduct, wine_id: int, offer_id: int, shop_id: int, today: str):
-    for source, result in p.expert_awards:
+    page_vintage = _int(p.specs.get("vintage"))
+    cuvee_id = con.execute("SELECT cuvee_id FROM wine WHERE id=?", (wine_id,)).fetchone()["cuvee_id"]
+    for award in p.expert_awards:
+        source, result = award[0], award[1]
+        rated_vintage = award[2] if len(award) > 2 else None
         parsed = parse_award_text(source, result)
         if not parsed:
             continue
+        # A rating of another vintage (shops show older ones too) belongs to that vintage:
+        # it then counts in the track record, not in this wine's own score.
+        target = wine_id
+        if rated_vintage and page_vintage and rated_vintage != page_vintage and cuvee_id:
+            target = _wine_for(con, p, cuvee_id, rated_vintage)
         comp_id = competition_id(con, parsed["competition"])
         cur = con.execute(
-            """INSERT OR IGNORE INTO award (competition_id, year, name_raw, producer_raw, medal, points,
+            """INSERT OR IGNORE INTO award (competition_id, year, name_raw, producer_raw, vintage, medal, points,
                                             source, source_url, raw_text, found_on)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (comp_id, parsed["year"], p.title, p.specs.get("producer"), parsed["medal"], parsed["points"],
-             "shop page", p.url, parsed["raw_text"], today),
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (comp_id, parsed["year"], p.title, p.specs.get("producer"), rated_vintage, parsed["medal"],
+             parsed["points"], "shop page", p.url, parsed["raw_text"], today),
         )
         if cur.rowcount:
             award_id = cur.lastrowid
-            log_event(con, today, "new_award", shop_id, offer_id, wine_id, new=parsed["raw_text"])
+            log_event(con, today, "new_award", shop_id, offer_id, target, new=parsed["raw_text"])
         else:
             award_id = con.execute(
                 """SELECT id FROM award WHERE source='shop page' AND source_url=? AND competition_id=?
@@ -98,7 +151,7 @@ def _save_awards(con, p: gall.GallProduct, wine_id: int, offer_id: int, shop_id:
         # The shop shows it on this wine's own page: a confirmed match.
         con.execute(
             "INSERT OR IGNORE INTO award_match (award_id, wine_id, match_score, confirmed) VALUES (?,?,1.0,1)",
-            (award_id, wine_id),
+            (award_id, target),
         )
 
 
@@ -116,11 +169,11 @@ def _change_events(con, today, shop_id, offer_id, wine_id, current, p, stock):
         log_event(con, today, "back_in_stock" if stock else "out_of_stock", shop_id, offer_id, wine_id)
 
 
-def save_product(con, shop_id: int, p: gall.GallProduct, today: str):
+def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=None):
     vintage = _int(p.specs.get("vintage"))
     vkey = str(vintage) if vintage else "nv"
-    cuvee_id = _upsert_cuvee(con, p)
-    wine_id = _upsert_wine(con, p, cuvee_id, vintage)
+    cuvee_id = _resolve_cuvee(con, p, shop_id, matcher)
+    wine_id = _wine_for(con, p, cuvee_id, vintage)
 
     per75 = round(p.price * 75 / p.volume_cl, 2) if p.price and p.volume_cl else None
     deal = parse_deal(p.promotion, p.price)
@@ -209,65 +262,70 @@ def mark_gone(con, shop_id: int, product_ids_in_sitemap: set[str], today: str) -
     return len(gone)
 
 
-def _open_run(con, resume: bool):
+def _open_run(con, job: str, resume: bool):
     """Return (run_id, skip_since_date, ok, failed). Reuses a recent unfinished run when resuming."""
     if resume:
         row = con.execute(
             """SELECT id, started, pages_ok, pages_failed FROM run_log
-               WHERE job='gall' AND finished IS NULL AND started >= ?
+               WHERE job=? AND finished IS NULL AND started >= ?
                ORDER BY started DESC LIMIT 1""",
-            ((dt.datetime.now() - dt.timedelta(days=8)).isoformat(timespec="seconds"),),
+            (job, (dt.datetime.now() - dt.timedelta(days=8)).isoformat(timespec="seconds")),
         ).fetchone()
         if row:
-            log.info("Gall: resuming the run that started %s", row["started"])
+            log.info("%s: resuming the run that started %s", job, row["started"])
             return row["id"], row["started"][:10], row["pages_ok"] or 0, row["pages_failed"] or 0
     # Older unfinished runs will never be resumed: mark them.
-    con.execute(
-        "UPDATE run_log SET note='interrupted' WHERE job='gall' AND finished IS NULL"
-    )
+    con.execute("UPDATE run_log SET note='interrupted' WHERE job=? AND finished IS NULL", (job,))
     started = dt.datetime.now().isoformat(timespec="seconds")
-    run_id = con.execute("INSERT INTO run_log (job, started) VALUES ('gall', ?)", (started,)).lastrowid
+    run_id = con.execute("INSERT INTO run_log (job, started) VALUES (?, ?)", (job, started)).lastrowid
     return run_id, None, 0, 0
 
 
-def collect_gall(limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
+def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
+    """Read every wine page of one shop (a module from wijnkoop.shops) into the database."""
+    from .awards.importer import Matcher
+
     con = con or db.connect()
-    con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES (?, ?)", (gall.SHOP_NAME, gall.BASE))
-    shop_id = con.execute("SELECT id FROM shop WHERE name=?", (gall.SHOP_NAME,)).fetchone()["id"]
-    run_id, skip_since, ok, failed = _open_run(con, resume and not limit)
+    name = shop.SHOP_NAME
+    con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES (?, ?)", (name, shop.BASE))
+    shop_id = con.execute("SELECT id FROM shop WHERE name=?", (name,)).fetchone()["id"]
+    run_id, skip_since, ok, failed = _open_run(con, shop.KEY, resume and not limit)
     con.commit()
 
-    client = client or PoliteClient(gall.BASE)
-    log.info("Gall: waiting %.0f s between pages", client.delay)
-    urls = []
-    for sm in gall.child_sitemaps(client.get(gall.SITEMAP_INDEX)):
-        urls += gall.product_urls_from_sitemap(client.get(sm))
-    # Only wines: the colour word sits in the address (rood / wit / rose).
-    wine_urls = [u for u in urls if (gall.parse_url(u) or {}).get("colour")]
-    log.info("Gall: %d products in sitemap, %d look like wine", len(urls), len(wine_urls))
-    all_wine_urls = list(wine_urls)
+    client = client or PoliteClient(shop.BASE)
+    log.info("%s: waiting %.0f s between pages", name, client.delay)
+    products = shop.list_products(client)
+    log.info("%s: %d product pages to read", name, len(products))
+    all_ids = {pid for _, pid in products}
     if limit:
-        wine_urls = wine_urls[:limit]
-    total = len(wine_urls)
+        products = products[:limit]
+    total = len(products)
     if skip_since:
-        done = {
-            r[0] for r in con.execute(
-                "SELECT shop_product_id FROM offer WHERE shop_id=? AND last_seen >= ?", (shop_id, skip_since)
-            )
-        }
-        wine_urls = [u for u in wine_urls if gall.parse_url(u)["product_id"] not in done]
-        log.info("Gall: %d pages already read in this run, %d to go", total - len(wine_urls), len(wine_urls))
-    already = total - len(wine_urls)
+        done = {r[0] for r in con.execute(
+            "SELECT shop_product_id FROM offer WHERE shop_id=? AND last_seen >= ?", (shop_id, skip_since))}
+        done |= {r[0] for r in con.execute(
+            "SELECT shop_product_id FROM skipped_page WHERE shop_id=? AND seen_on >= ?", (shop_id, skip_since))}
+        products = [(u, pid) for u, pid in products if pid not in done]
+        log.info("%s: %d pages already read in this run, %d to go", name, total - len(products), len(products))
+    already = total - len(products)
     if skip_since:
         ok = already  # pages read before the interruption count as done
     con.execute("UPDATE run_log SET note=? WHERE id=?", (f"{already} of {total} pages read", run_id))
     con.commit()
 
+    # The same wine sold by another shop under a slightly different name is recognised.
+    matcher = Matcher(con, other_than_shop=shop_id)
+    is_wine = getattr(shop, "is_wine_product", None)
     today = dt.date.today().isoformat()
-    for i, url in enumerate(wine_urls, already + 1):
+    for i, (url, pid) in enumerate(products, already + 1):
         try:
-            product = gall.parse_product(url, client.get(url))
-            save_product(con, shop_id, product, today)
+            product = shop.parse_product(url, client.get(url))
+            if is_wine and not is_wine(product):
+                # glasses, tastings, spirits: remember the page so a resumed run skips it
+                con.execute("INSERT OR REPLACE INTO skipped_page (shop_id, shop_product_id, seen_on) VALUES (?,?,?)",
+                            (shop_id, pid, today))
+            else:
+                save_product(con, shop_id, product, today, matcher)
             ok += 1
         except NotAllowed:
             log.warning("robots.txt does not allow %s, skipped", url)
@@ -278,18 +336,21 @@ def collect_gall(limit: int | None = None, con=None, resume: bool = True, client
             con.execute("UPDATE run_log SET pages_ok=?, pages_failed=?, note=? WHERE id=?",
                         (ok, failed, f"{i} of {total} pages read", run_id))
             con.commit()
-            log.info("Gall: %d / %d pages done", i, total)
+            log.info("%s: %d / %d pages done", name, i, total)
     if not limit and total and failed < total / 2:
-        sitemap_ids = {gall.parse_url(u)["product_id"] for u in all_wine_urls}
-        n = mark_gone(con, shop_id, sitemap_ids, today)
-        log.info("Gall: %d wines are no longer on the site", n)
+        n = mark_gone(con, shop_id, all_ids, today)
+        log.info("%s: %d wines are no longer on the site", name, n)
     con.execute(
         "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=? WHERE id=?",
         (dt.datetime.now().isoformat(timespec="seconds"), ok, failed, f"{total} of {total} pages read", run_id),
     )
     con.commit()
-    log.info("Gall: finished, %d ok, %d failed", ok, failed)
+    log.info("%s: finished, %d ok, %d failed", name, ok, failed)
     from .scores import recompute
 
     recompute(con)
     return {"ok": ok, "failed": failed}
+
+
+def collect_gall(limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
+    return collect_shop(gall, limit=limit, con=con, resume=resume, client=client)

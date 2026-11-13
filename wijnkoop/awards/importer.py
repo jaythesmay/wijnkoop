@@ -42,6 +42,14 @@ def _words(text: str | None) -> set[str]:
     return {w for w in norm(text).split() if w not in STOP and len(w) > 1 and not w.isdigit()}
 
 
+def _after_producer(name: str, producer_words: set[str]) -> set[str]:
+    """The words of a name after the producer part at its start ("Isabelle et Pierre Clement
+    Menetou Salon" with producer Clement -> Menetou Salon). Empty when no producer word is near the start."""
+    words = cuvee_key(name).split()
+    last = max((i for i, w in enumerate(words[:6]) if w in producer_words), default=None)
+    return set(words[last + 1:]) - COLOUR_WORDS - STOP if last is not None else set()
+
+
 def _comp(short: str):
     for c in COMPETITIONS:
         if c[0] == short:
@@ -50,14 +58,17 @@ def _comp(short: str):
 
 
 class Matcher:
-    def __init__(self, con):
+    def __init__(self, con, other_than_shop: int | None = None):
+        """Shop wines to match against; with other_than_shop, only wines sold by OTHER shops
+        (used to recognise the same wine in a second shop)."""
         self.con = con
         self.by_word = defaultdict(set)
         self.cuvees = {}
         rows = con.execute(
             """SELECT c.id, c.name, c.producer, c.colour FROM cuvee c
-               WHERE c.is_wine = 1 AND c.id IN (SELECT w.cuvee_id FROM wine w JOIN offer o ON o.wine_id = w.id)"""
-        ).fetchall()
+               WHERE c.is_wine = 1 AND c.id IN (SELECT w.cuvee_id FROM wine w JOIN offer o ON o.wine_id = w.id
+                                                WHERE ? IS NULL OR o.shop_id != ?)""",
+            (other_than_shop, other_than_shop)).fetchall()
         for r in rows:
             pw = _words(r["producer"])
             nw = set(cuvee_key(r["name"]).split()) - COLOUR_WORDS
@@ -85,6 +96,10 @@ class Matcher:
             left = " ".join(sorted(na - pa - pw))
             right = " ".join(sorted(nw - pa - pw))
             score = 100.0 if not left and not right else fuzz.token_sort_ratio(left, right)
+            # First names before the producer ("Isabelle et Pierre Clement ...") say nothing either.
+            la, ra = _after_producer(rec["name"], pa | pw), _after_producer(name, pa | pw)
+            if la and ra:
+                score = max(score, fuzz.token_sort_ratio(" ".join(sorted(la)), " ".join(sorted(ra))))
             if score > best[1]:
                 best = (cid, score)
         return best
