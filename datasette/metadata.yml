@@ -161,6 +161,19 @@ databases:
           FROM award_match m JOIN award a ON a.id = m.award_id JOIN wine w ON w.id = m.wine_id
           WHERE m.confirmed IS NULL
           ORDER BY m.match_score DESC
+      same_wine_in_shops:
+        title: Same wine in two shops?
+        description: >-
+          Wines from different shops with nearly the same name. "linked" ones are treated as one wine
+          (so prices can be compared); "to check" ones are kept apart. Tell Claude which are wrong.
+        sql: |-
+          SELECT 'linked' AS status, a.match_score, a.name AS name_in_shop, s.name AS shop,
+                 c.name AS linked_to, a.cuvee_id
+          FROM cuvee_alias a JOIN cuvee c ON c.id = a.cuvee_id LEFT JOIN shop s ON s.id = a.shop_id
+          UNION ALL
+          SELECT 'to check', x.match_score, c1.name, NULL, c2.name, x.other_cuvee_id
+          FROM same_wine_check x JOIN cuvee c1 ON c1.id = x.cuvee_id JOIN cuvee c2 ON c2.id = x.other_cuvee_id
+          ORDER BY status DESC, match_score
       on_promotion:
         title: Wines on promotion now
         sql: |-

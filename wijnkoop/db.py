@@ -176,6 +176,25 @@ CREATE TABLE IF NOT EXISTS offer_score (
     market_rank REAL,
     best_for_price INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS skipped_page (
+    shop_id INTEGER NOT NULL REFERENCES shop(id),
+    shop_product_id TEXT NOT NULL,
+    seen_on TEXT,
+    PRIMARY KEY (shop_id, shop_product_id)
+);
+CREATE TABLE IF NOT EXISTS cuvee_alias (
+    norm_key TEXT PRIMARY KEY,
+    cuvee_id INTEGER NOT NULL REFERENCES cuvee(id),
+    name TEXT,
+    shop_id INTEGER REFERENCES shop(id),
+    match_score REAL
+);
+CREATE TABLE IF NOT EXISTS same_wine_check (
+    cuvee_id INTEGER NOT NULL REFERENCES cuvee(id),
+    other_cuvee_id INTEGER NOT NULL REFERENCES cuvee(id),
+    match_score REAL,
+    PRIMARY KEY (cuvee_id, other_cuvee_id)
+);
 CREATE TABLE IF NOT EXISTS setting (
     key TEXT PRIMARY KEY,
     value TEXT

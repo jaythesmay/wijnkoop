@@ -10,6 +10,7 @@ from urllib.parse import unquote
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
+KEY = "gall"
 BASE = "https://www.gall.nl"
 SITEMAP_INDEX = BASE + "/sitemap_index.xml"
 SHOP_NAME = "Gall & Gall"
@@ -106,6 +107,14 @@ def parse_url(url: str) -> dict | None:
 def product_urls_from_sitemap(xml: str) -> list[str]:
     locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)
     return [u for u in locs if parse_url(u)]
+
+
+def list_products(client) -> list[tuple[str, str]]:
+    """[(url, product_id)] of the wines in the sitemap: the colour word sits in the address."""
+    urls = []
+    for sm in child_sitemaps(client.get(SITEMAP_INDEX)):
+        urls += product_urls_from_sitemap(client.get(sm))
+    return [(u, parse_url(u)["product_id"]) for u in urls if (parse_url(u) or {}).get("colour")]
 
 
 def child_sitemaps(index_xml: str) -> list[str]:
