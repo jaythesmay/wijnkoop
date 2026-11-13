@@ -82,6 +82,10 @@ SHOPS = [
      "Free delivery in NL from EUR 75 (henribloem.nl, Nov 2026); the cost below that is not on the product pages."),
     ("Okhuysen", "https://okhuysen.nl", None, 115.0, None,
      "Free delivery from EUR 115 (okhuysen.nl, Nov 2026); the cost below that is not on the product pages."),
+    ("Wijnvoordeel", "https://www.wijnvoordeel.nl", None, 50.0, None,
+     "Free delivery from EUR 50 (wijnvoordeel.nl, Nov 2026); sold per box of 6."),
+    ("Wijnbeurs", "https://www.wijnbeurs.nl", None, None, None,
+     "Delivery cost not on the product pages; sold per box of 6."),
 ]
 
 
