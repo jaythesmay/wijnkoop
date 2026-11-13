@@ -200,6 +200,9 @@ async def update(datasette, request):
         if post.get("stop"):
             await _write(datasette, jobs.stop_job, int(post["stop"]))
             return Response.redirect("/update")
+        if post.get("limits"):
+            await _write(datasette, jobs.set_limits, post.get("max_runs"), post.get("max_browser_runs"))
+            return Response.redirect("/update#limits")
         if post.get("shop") == "all":
             status = await _read(datasette, jobs.shop_status)
             keys = status["useful"]

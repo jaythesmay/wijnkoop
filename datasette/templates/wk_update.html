@@ -59,6 +59,19 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 </tr>
 {% endfor %}
 </table></div>
+<h2 id="limits">At the same time</h2>
+<form method="post" action="/update" class="panel" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="limits" value="1">
+  <div><label for="max_runs">Shops read at once</label>
+    <input type="number" id="max_runs" name="max_runs" min="1" max="10" value="{{ limits.max_runs }}" style="width:80px"></div>
+  <div><label for="max_browser_runs">Of which with the browser</label>
+    <input type="number" id="max_browser_runs" name="max_browser_runs" min="1" max="10" value="{{ limits.max_browser_runs }}" style="width:80px"></div>
+  <button type="submit">Save</button>
+  <p class="small muted" style="margin:0;flex-basis:100%">Other shops wait their turn. Wijnvoordeel and Wijnbeurs need a headless browser, which takes the most from the NAS.
+  Runs have a lower priority than these pages, so the app stays quick while they work.</p>
+</form>
+
 <p class="small muted" style="margin-top:12px">Every run is in the <a href="/wijnkoop/run_log?_sort_desc=id">update log</a>.
 Messages while it runs are in the container's log in Container Station.</p>
 {% endblock %}
