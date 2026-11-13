@@ -90,6 +90,8 @@ SHOPS = [
      "Delivery cost not on the product pages (grandcruwijnen.nl, Nov 2026)."),
     ("Grape District", "https://www.grapedistrict.nl", None, 75.0, None,
      "Free delivery from EUR 75 (grapedistrict.nl, Nov 2026)."),
+    ("Vino.com", "https://www.vino.com", None, None, None,
+     "Italian shop delivering in NL; the delivery cost is shown only in the basket (vino.com, Nov 2026)."),
 ]
 
 

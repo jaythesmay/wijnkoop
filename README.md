@@ -3,8 +3,8 @@
 _koop wijn goedkoop_
 
 A private wine value finder that runs on a QNAP NAS. It reads wine prices from Dutch shops
-(Gall & Gall, Vindict, Henri Bloem, Okhuysen, Wijnvoordeel, Wijnbeurs, Grand Cru Wijnen and
-Grape District so far), combines them with award and critic scores, stores everything in one SQLite
+(Gall & Gall, Vindict, Henri Bloem, Okhuysen, Wijnvoordeel, Wijnbeurs, Grand Cru Wijnen,
+Grape District and Vino.com so far), combines them with award and critic scores, stores everything in one SQLite
 file and shows it at `http://<nas-address>:8001`.
 
 Design: see the "WijnKoop – app design" document.
@@ -50,6 +50,9 @@ and open `http://<nas tailscale name>:8001`.
   (Suckling, Parker, ...). Henri Bloem's price for 6 bottles counts as a deal; Okhuysen's
   pre-sale wines ("Voorverkoop") count as not in stock. Grand Cru Wijnen shows Parker, Suckling and
   Vinous scores (about 5,000 pages, 7 hours); Grape District shows Hamersma and other guide ratings.
+  Vino.com (Italian, delivers in NL; about 6,800 pages, 9 to 10 hours) shows Suckling, Parker,
+  Falstaff and other critic scores, often of another vintage; its own "Vino.com" score is left out.
+  Its "Laagste prijs" (lowest price of the last 30 days) counts as the normal price of a reduced wine.
 - Wijnvoordeel and Wijnbeurs show their prices only after the page's JavaScript ran, so they are
   read with a headless browser (Chromium, in the image), 20 s apart as their robots.txt asks. It
   loads only the shop's own site (no images, trackers or cookie banners). Their medals come from
@@ -81,7 +84,7 @@ and open `http://<nas tailscale name>:8001`.
 | `python -m wijnkoop check --count 3` | Reads 3 wine pages, prints what it understood, saves the raw pages in `/data/samples` |
 | `python -m wijnkoop collect --limit 20` | Reads the first 20 wines into the database |
 | `python -m wijnkoop collect` | Reads all wines of every shop now (takes hours) |
-| `python -m wijnkoop collect --shop vindict` | Reads one shop now (`gall`, `vindict`, `henribloem`, `okhuysen`, `wijnvoordeel`, `wijnbeurs`, `grandcru` or `grapedistrict`) |
+| `python -m wijnkoop collect --shop vindict` | Reads one shop now (`gall`, `vindict`, `henribloem`, `okhuysen`, `wijnvoordeel`, `wijnbeurs`, `grandcru`, `grapedistrict` or `vinocom`) |
 | `python -m wijnkoop check --shop vindict --count 3` | Reads 3 pages of one shop and prints what it understood |
 | `python -m wijnkoop awards` | Reads IWC and Concours Mondial results now and links them to the shop wines |
 | `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
