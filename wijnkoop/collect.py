@@ -298,6 +298,13 @@ def failure_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {text}"[:200] if text else type(exc).__name__
 
 
+def fetch_page(shop, client, url: str) -> str:
+    """The page a shop's parse_product reads: the product page itself, or what the shop's own
+    fetch_page fetches for it (a Shopify shop's small product JSON instead of the full page)."""
+    own = getattr(shop, "fetch_page", None)
+    return own(client, url) if own else client.get(url)
+
+
 def make_client(shop):
     """A plain polite client, or a headless browser for shops that need one."""
     if getattr(shop, "NEEDS_BROWSER", False):
@@ -358,7 +365,7 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     today = dt.date.today().isoformat()
     for i, (url, pid) in enumerate(products, already + 1):
         try:
-            product = shop.parse_product(url, client.get(url))
+            product = shop.parse_product(url, fetch_page(shop, client, url))
             if is_wine and not is_wine(product):
                 # glasses, tastings, spirits: remember the page so a resumed run skips it
                 con.execute("INSERT OR REPLACE INTO skipped_page (shop_id, shop_product_id, seen_on) VALUES (?,?,?)",

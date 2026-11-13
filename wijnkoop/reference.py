@@ -8,6 +8,7 @@ Weights (design review, Phase 2):
   0.4  everything else
 Bronze and Commended medals are stored but count as no evidence.
 """
+import html
 import re
 
 from .normalize import strip_accents
@@ -40,6 +41,7 @@ COMPETITIONS = [
     ("Luca Maroni", "Luca Maroni", "critic", 0.4, r"maroni"),
     ("Perswijn", "Perswijn", "critic", 0.4, r"perswijn"),
     ("Hamersma", "De Grote Hamersma", "critic", 0.4, r"hamersma"),
+    ("Onno Kleyn", "Onno Kleyn", "critic", 0.4, r"onno\s+kleyn"),
 ]
 OTHER_COMPETITION = ("Other", "Other competition or critic", "competition", 0.4)
 
@@ -93,6 +95,18 @@ SHOPS = [
      "Free delivery from EUR 75 (grapedistrict.nl, Nov 2026)."),
     ("Vino.com", "https://www.vino.com", None, None, None,
      "Italian shop delivering in NL; the delivery cost is shown only in the basket (vino.com, Nov 2026)."),
+    ("Vanouds de Zwaan", "https://vanoudsdezwaan.nl", None, None, None,
+     "Delivery cost not in the product data (vanoudsdezwaan.nl, Nov 2026)."),
+    ("Vinio", "https://www.vinio.nl", None, None, None,
+     "Delivery cost not in the product data (vinio.nl, Nov 2026)."),
+    ("Colaris", "https://www.colaris.nl", None, None, None,
+     "Delivery cost not on the product pages (colaris.nl, Nov 2026)."),
+    ("Wijny", "https://www.wijny.nl", None, 85.0, None,
+     "Webshop of Bon Import, Almere. Free delivery of wine from EUR 85 (wijny.nl, Nov 2026)."),
+    ("Alex Storms", "https://storms.nl", None, None, None,
+     "Wijnkoperij Alex Storms - Mertens. Delivery cost not on the product pages (storms.nl, Nov 2026)."),
+    ("Rootring Wijnen", "https://rootring-wijnen.nl", 6.95, 100.0, None,
+     "EUR 6.95, free from EUR 100 or within 20 km of Alkmaar; 10% off from 6 bottles (rootring-wijnen.nl, Nov 2026)."),
 ]
 
 
@@ -107,6 +121,54 @@ def find_competition(text: str):
         if re.search(pattern, plain):
             return short, name, kind, weight
     return None
+
+
+# A critic's score inside running text: "Robert Parker 95/100", "Wine Advocate(91-93)/100",
+# "93 punten James Suckling", "Jancis Robinson 17/20".
+_SCORE_IN_TEXT = re.compile(
+    r"\(?(?<![\d.,])(\d{2,3}(?:[.,]\d)?)(?:\s*[-–]\s*(\d{2,3}))?\)?\s*"
+    r"(?:/\s*100(?!\d)|punten\b|points\b|pts\b|ptn\b)"
+    r"|(?<![\d.,])(\d{1,2}(?:[.,]\d)?)\s*/\s*20(?!\d)")
+
+
+def _critic_near(plain: str, start: int, end: int):
+    """The critic or competition named closest before a score (or else right after it)."""
+    before, after = plain[max(0, start - 60):start], plain[end:end + 40]
+    best = None
+    for short, name, kind, weight, pattern in COMPETITIONS:
+        for m in re.finditer(pattern, before):
+            if not best or m.end() > best[0]:
+                best = (m.end(), name)
+    if best:
+        return best[1]
+    first = None
+    for short, name, kind, weight, pattern in COMPETITIONS:
+        m = re.search(pattern, after)
+        if m and (not first or m.start() < first[0]):
+            first = (m.start(), name)
+    return first[1] if first else None
+
+
+def awards_in_text(text: str | None) -> list[tuple[str, str]]:
+    """[(critic, result)] for every score a description names with its critic, e.g.
+    ("Robert Parker / Wine Advocate", "95 punten"). A score without a known critic is left out."""
+    plain = _plain(re.sub(r"<[^>]+>", " ", html.unescape(text or "")))
+    out = []
+    for m in _SCORE_IN_TEXT.finditer(plain):
+        critic = _critic_near(plain, m.start(), m.end())
+        if not critic:
+            continue
+        if m.group(3):
+            result = f"{m.group(3).replace(',', '.')}/20"
+        else:
+            low = float(m.group(1).replace(",", "."))
+            high = float(m.group(2)) if m.group(2) else None
+            if not 50 <= low <= 100 or (high and not low < high <= 100):
+                continue
+            result = f"{m.group(1)}-{m.group(2)}/100" if high else f"{low:g} punten"
+        if (critic, result) not in out:
+            out.append((critic, result))
+    return out
 
 
 def parse_award_text(source: str, result: str = "") -> dict | None:
