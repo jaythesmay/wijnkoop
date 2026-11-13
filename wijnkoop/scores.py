@@ -119,7 +119,10 @@ def nothing_better_for_less(items: list[tuple]) -> set:
 
 
 def _wine_scores(con, now):
+    from .awards.importer import unlink_conflicts
+
     reparse_shop_awards(con)
+    unlink_conflicts(con)
     rows = con.execute(
         """SELECT m.wine_id, w.cuvee_id, c.producer_key, a.medal, a.points, a.raw_text,
                   comp.short, comp.weight, comp.kind, a.year, a.source

@@ -1,7 +1,8 @@
 """Read competition results, store them as awards and link them to wines in the shops.
 
 Matching: the producer must share a meaningful word with the shop wine's producer or
-name, and the rest of the names must be nearly the same (rapidfuzz token_sort_ratio).
+name, the rest of the names must be nearly the same (rapidfuzz token_sort_ratio), and the
+names may not name a different colour, tier, sweetness or age in any language (conflict()).
   >= 88   linked and counted in the score
   75-88   linked for review only (not counted), visible on the "Matches to check" page
 Same vintage: linked to that wine. Other vintage of the same wine: linked to that
@@ -9,13 +10,14 @@ vintage (created without an offer), so it feeds the wine's track record.
 """
 import datetime as dt
 import logging
+import re
 from collections import defaultdict
 
 from rapidfuzz import fuzz
 
 from .. import db
 from ..fetch import NotAllowed, PoliteClient
-from ..normalize import cuvee_key, norm, wine_key
+from ..normalize import cuvee_key, norm, strip_accents, wine_key
 from ..reference import COMPETITIONS, competition_id
 from . import cmb, iwc
 
@@ -36,6 +38,65 @@ vina vinas vinedos vigna vigneti finca hacienda
 COLOUR_WORDS = set("""
 rose rosado rosato rouge red tinto rosso blanc white blanco bianco branco wit rood
 """.split())
+
+
+# A wine's colour, type or age named in any of the usual languages. Two names that both name one
+# and name a different one are different wines ("A Descoberta Tinto" is not "A Descoberta Branco"),
+# however alike the rest of the names.
+COLOURS = {
+    "red": "red rouge tinto rosso rood rode rot roter rotwein negre vermelho",
+    "white": "white blanc blanco blanca bianco bianca branco wit witte weiss weisser weisswein",
+    "rosé": "rose rosado rosato roze rosee blush",
+}
+COLOUR_OF = {w: c for c, words in COLOURS.items() for w in words.split()}
+LABEL_GROUPS = [  # (what it is, [(label, pattern)]) longest first
+    ("tier", [("gran reserva", r"gran(?:de)? reserv[ae]|grand reserve"), ("gran selezione", r"gran selezione"),
+              ("reserva", r"reserv[ae]|riserva"), ("crianza", r"crianza"), ("roble", r"roble"),
+              ("joven", r"joven")]),
+    ("sweetness", [("brut nature", r"brut nature|pas dose|dosage zero|zero dosage|non dose"),
+                   ("extra brut", r"extra brut"), ("extra dry", r"extra dry|extra sec"),
+                   ("demi sec", r"demi sec|semi seco|halbtrocken|medium dry"), ("brut", r"brut"),
+                   ("sweet", r"doux|dolce|dulce|sweet|zoet")]),
+    ("port", [("tawny", r"tawny"), ("ruby", r"ruby"), ("lbv", r"lbv|late bottled")]),
+]
+AGE = re.compile(r"\b(\d{1,2})\s*(?:years?|yrs?|anos|ans|jahre|jaar|y\s*o)\b")
+
+
+def _plain(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", strip_accents((text or "").lower().replace("ß", "ss"))).strip()
+
+
+def name_colours(name: str | None, skip: set[str] = frozenset()) -> set[str]:
+    """Colours named in a wine's name, leaving out words of the producer's name ("Red Newt Cellars")."""
+    return {COLOUR_OF[w] for w in _plain(name).split() if w in COLOUR_OF and w not in skip}
+
+
+def _labels(name: str | None) -> dict[str, str]:
+    t = f" {_plain(name)} "
+    out = {}
+    for group, labels in LABEL_GROUPS:
+        for label, pattern in labels:
+            if re.search(rf"\b(?:{pattern})\b", t):
+                out[group] = label
+                break
+    m = AGE.search(t)
+    if m:
+        out["age"] = m.group(1)
+    return out
+
+
+def conflict(award_name: str, award_colour: str | None, wine_name: str, wine_colour: str | None,
+             producer_words: set[str] = frozenset()) -> str | None:
+    """Why an award cannot be for this wine (a different colour, tier, sweetness or age), or None."""
+    a = name_colours(award_name, producer_words) or ({award_colour} if award_colour else set())
+    w = name_colours(wine_name, producer_words) or ({wine_colour} if wine_colour else set())
+    if a and w and not a & w:
+        return f"colour: {'/'.join(sorted(a))} award, {'/'.join(sorted(w))} wine"
+    la, lw = _labels(award_name), _labels(wine_name)
+    for group in la.keys() & lw.keys():
+        if la[group] != lw[group]:
+            return f"{group}: {la[group]} award, {lw[group]} wine"
+    return None
 
 
 def _words(text: str | None) -> set[str]:
@@ -88,6 +149,8 @@ class Matcher:
             name, pw, nw, colour = self.cuvees[cid]
             if rec.get("colour") and colour and rec["colour"] != colour:
                 continue
+            if conflict(rec["name"], rec.get("colour"), name, colour, pa | pw):
+                continue
             # The award's producer must name the shop wine's producer (or, when the shop
             # gives no producer, the first words of the wine's name).
             first = set(cuvee_key(name).split()[:2]) - STOP
@@ -120,7 +183,52 @@ class Matcher:
                                 (wine_key(c["name"], vintage),)).fetchone()["id"]
 
 
-def match_awards(con, only_unmatched: bool = True, today: dt.date | None = None) -> dict:
+def unlink_conflicts(con) -> list[int]:
+    """Undo links between an award and a wine of another colour, tier, sweetness or age, made
+    before the matching checked these. The awards are linked again with the current rules, and
+    a vintage that existed only because of such a link is removed. Returns the award ids."""
+    rows = con.execute(
+        """SELECT m.award_id, m.wine_id, a.producer_raw, a.name_raw, a.colour AS award_colour,
+                  w.name, w.producer, w.colour
+           FROM award_match m JOIN award a ON a.id = m.award_id JOIN wine w ON w.id = m.wine_id
+           WHERE a.source != 'shop page'""").fetchall()
+    undone, wines = [], set()
+    for r in rows:
+        why = conflict(r["name_raw"], r["award_colour"], r["name"], r["colour"],
+                       _words(r["producer_raw"]) | _words(r["producer"]))
+        if why:
+            log.info("Award %s is not for wine %s (%s): link undone", r["award_id"], r["wine_id"], why)
+            con.execute("DELETE FROM award_match WHERE award_id=? AND wine_id=?", (r["award_id"], r["wine_id"]))
+            undone.append(r["award_id"])
+            wines.add(r["wine_id"])
+    for wine_id in wines:
+        used = con.execute(
+            """SELECT EXISTS (SELECT 1 FROM offer WHERE wine_id=:w) OR EXISTS (SELECT 1 FROM award_match WHERE wine_id=:w)
+                      OR EXISTS (SELECT 1 FROM manual_score WHERE wine_id=:w) OR EXISTS (SELECT 1 FROM watch WHERE wine_id=:w)""",
+            {"w": wine_id}).fetchone()[0]
+        if not used:  # made only to hold that award (another vintage, no shop sells it)
+            for table in ("wine_score", "event", "vivino_rating"):
+                try:
+                    con.execute(f"DELETE FROM {table} WHERE wine_id=?", (wine_id,))
+                except Exception:  # vivino_rating may not exist yet
+                    pass
+            con.execute("DELETE FROM wine WHERE id=?", (wine_id,))
+    # The same goes for a shop wine taken for the same wine as one from another shop.
+    for r in con.execute("""SELECT a.norm_key, a.name, c.name AS cuvee, c.producer, c.colour
+                            FROM cuvee_alias a JOIN cuvee c ON c.id = a.cuvee_id""").fetchall():
+        why = conflict(r["name"], None, r["cuvee"], r["colour"], _words(r["producer"]))
+        if why:
+            # The next run of that shop reads it as a wine of its own.
+            log.info("%s is not the same wine as %s (%s)", r["name"], r["cuvee"], why)
+            con.execute("DELETE FROM cuvee_alias WHERE norm_key=?", (r["norm_key"],))
+    con.commit()
+    if undone:
+        match_awards(con, award_ids=undone)
+    return undone
+
+
+def match_awards(con, only_unmatched: bool = True, today: dt.date | None = None,
+                 award_ids: list[int] | None = None) -> dict:
     """Link competition awards (not the ones read from shop pages) to shop wines.
 
     A "new award" event is logged only for awards found today by a source that was read
@@ -130,6 +238,8 @@ def match_awards(con, only_unmatched: bool = True, today: dt.date | None = None)
     where = "a.source != 'shop page'"
     if only_unmatched:
         where += " AND NOT EXISTS (SELECT 1 FROM award_match x WHERE x.award_id = a.id)"
+    if award_ids is not None:
+        where += f" AND a.id IN ({','.join(str(int(i)) for i in award_ids) or 'NULL'})"
     rows = con.execute(
         f"""SELECT a.id, a.producer_raw, a.name_raw, a.vintage, a.colour, a.raw_text,
                    (a.found_on = ? AND EXISTS (SELECT 1 FROM award b WHERE b.source = a.source

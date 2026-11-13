@@ -159,3 +159,49 @@ def test_matching_real_cases(tmp_path):
         ("Domaine de l'Amaurigue", "Domaine de l'Amaurigue Rosé", 1),
         ("Côtes du Rhône Rouge", "M. Chapoutier Côtes du Rhône", 1),
     ]
+
+
+def test_colour_type_and_age_must_agree():
+    c = importer.conflict
+    assert c("Casa da Passarella A Descoberta Branco", None, "Casa da Passarella Dão A Descoberta Tinto", "red")
+    assert c("A Descoberta Branco", None, "Casa da Passarella A Descoberta", "red")  # the wine's own colour
+    assert c("Château Cheval Blanc", None, "Château Cheval Blanc Saint-Émilion", "red") is None  # a name, both
+    assert c("Riesling Dry", "white", "Red Newt Cellars Riesling", "white", {"red", "newt"}) is None
+    assert c("Domaine X Côtes du Rhône Rouge", None, "Domaine X Côtes du Rhône", "red") is None
+    assert c("Bodegas X Rosado", None, "Bodegas X Rosé", "rosé") is None
+    assert c("Weißer Burgunder Trocken", None, "Rotwein Cuvée", None)  # German
+    assert c("Muga Gran Reserva", None, "Muga Reserva", "red")
+    assert c("Muga Reserva", None, "Muga Riserva", "red") is None
+    assert c("Taylor's 20 Year Old Tawny Port", None, "Taylor's Tawny Port 10 years", "red")
+    assert c("Taylor's Tawny", None, "Taylor's Ruby", "red")
+    assert c("Moët Brut Impérial", None, "Moët Impérial Demi-Sec", "white")
+    assert c("Moët Brut Impérial", None, "Moët Impérial", "white") is None
+
+
+def test_other_colour_is_not_linked_and_old_links_are_undone(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    shop_wine(con, 1, "Casa da Passarella Dão A Descoberta Tinto", "Casa da Passarella", vintage=2023)
+    add_award(con, "Casa da Passarella", "A Descoberta Branco", 2025, points=95)
+    add_award(con, "Casa da Passarella", "A Descoberta Tinto", 2022, points=90)
+    importer.match_awards(con, today=dt.date(2026, 11, 12))
+    assert [tuple(r) for r in con.execute(
+        """SELECT a.name_raw, w.vintage FROM award_match m JOIN award a ON a.id = m.award_id
+           JOIN wine w ON w.id = m.wine_id""")] == [("A Descoberta Tinto", 2022)]
+
+    # A link made before this check: the Branco award on a 2025 Tinto made only to hold it
+    branco = con.execute("SELECT id FROM award WHERE name_raw='A Descoberta Branco'").fetchone()[0]
+    wine = importer.Matcher(con).wine_for(con.execute("SELECT cuvee_id FROM wine LIMIT 1").fetchone()[0], 2025)
+    con.execute("INSERT INTO award_match (award_id, wine_id, match_score, confirmed) VALUES (?,?,1,1)",
+                (branco, wine))
+    con.commit()
+    # A Branco from another shop now exists: the award belongs there
+    p = GallProduct(url="https://www.gall.nl/x-9.html", product_id="9", title="Casa da Passarella A Descoberta Branco",
+                    colour="white", volume_cl=75, price=11.99)
+    p.specs = {"producer": "Casa da Passarella", "vintage": "2025"}
+    save_product(con, 2, p, "2026-11-12")
+    from wijnkoop import scores
+    scores.recompute(con, dt.date(2026, 11, 12))
+    assert con.execute("SELECT COUNT(*) FROM wine WHERE id=?", (wine,)).fetchone()[0] == 0  # the made-up 2025 Tinto
+    assert con.execute(
+        """SELECT w.name, w.vintage FROM award_match m JOIN wine w ON w.id = m.wine_id
+           WHERE m.award_id=?""", (branco,)).fetchone()[:] == ("Casa da Passarella A Descoberta Branco", 2025)
