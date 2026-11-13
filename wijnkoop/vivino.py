@@ -192,8 +192,20 @@ def best_match(name: str, cands: list[dict]) -> tuple[dict | None, float]:
     return (best, score) if score >= MIN_MATCH else (None, score)
 
 
-def query_for(name: str, vintage) -> str:
-    return f"site:vivino.com {name} {vintage or ''}".strip()
+SIZE_WORDS = re.compile(
+    r"\b\d+\s*[x×]\s*\d+([.,]\d+)?\s*(cl|ml|l)\b|\b\d+([.,]\d+)?\s*(cl|ml|ltr|liter|litre|l)\b"
+    r"|\b(dubbele\s+)?magnum\b|\b(halve|half)\s+(fles|flesje|bottle)\b|\b(19|20)\d{2}\b", re.I)
+
+
+def search_name(name: str) -> str:
+    """The wine's name as Vivino knows it: without the vintage or the bottle size, which make
+    Vivino's own search find nothing ("Taylor's Tawny 2019 37,5cl")."""
+    return re.sub(r"\s+", " ", SIZE_WORDS.sub(" ", name or "")).strip(" -,")
+
+
+def query_for(name: str, vintage=None) -> str:
+    # The vintage is left out: a Vivino wine page covers every vintage.
+    return f"site:vivino.com {search_name(name)}"
 
 
 def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = None) -> dict:
@@ -230,4 +242,4 @@ def wines_to_test(con, count: int) -> list[int]:
 
 def search_link(name: str, vintage=None) -> str:
     from urllib.parse import quote_plus
-    return "https://www.vivino.com/search/wines?q=" + quote_plus(f"{name} {vintage or ''}".strip())
+    return "https://www.vivino.com/search/wines?q=" + quote_plus(search_name(name))
