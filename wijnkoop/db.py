@@ -470,6 +470,9 @@ def connect(path=None):
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         con.commit()
     con.executescript(TABLES)
+    from .vivino import ensure_tables
+
+    ensure_tables(con)
     _add_later_columns(con)
     con.executescript(VIEWS)
     con.execute("PRAGMA foreign_keys = ON")

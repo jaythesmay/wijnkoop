@@ -13,6 +13,7 @@ from rapidfuzz import fuzz, process
 from .deals import line_cost, parse_deal
 from .normalize import norm
 from .reference import award_score
+from .vivino import search_link as vivino_search_link
 
 COLOURS = {"red": "Red", "white": "White", "rosé": "Rosé"}
 # Gall writes country names in Dutch; the screens are in English.
@@ -302,8 +303,15 @@ def wine(conn, wine_id: int) -> dict | None:
     watched = conn.execute("SELECT 1 FROM watch WHERE wine_id=?", (wine_id,)).fetchone() is not None
     rule = price_rule(conn)
     chart = value_chart(conn, w["colour"], wine_id, rule["rate_pct"]) if w["score"] else None
+    try:
+        viv = _rows(conn, "SELECT rating, ratings_count, vivino_title, vivino_url, how, checked_on "
+                          "FROM vivino_rating WHERE wine_id = ? AND rating IS NOT NULL", (wine_id,))
+    except sqlite3.OperationalError:  # database not upgraded yet
+        viv = []
+    vivino = {"rating": viv[0] if viv else None, "search": vivino_search_link(w["name"], w["vintage"])}
     return {"wine": w, "offers": offers, "awards": awards, "other_vintages": other_vintages,
-            "history": history, "better": better, "watched": watched, "rule": rule, "chart": chart}
+            "history": history, "better": better, "watched": watched, "rule": rule, "chart": chart,
+            "vivino": vivino}
 
 
 def order(conn) -> dict:
