@@ -4,6 +4,7 @@ Every function takes a plain sqlite3 connection, so the screens can be tested wi
 a web server. The Datasette plugin in datasette/plugins/ calls these.
 """
 import datetime as dt
+import math
 import sqlite3
 from collections import defaultdict
 
@@ -34,13 +35,13 @@ def country_en(name: str | None) -> str | None:
 
 
 SORTS = {
-    "value": "price_quality DESC NULLS LAST, score DESC",
-    "score": "score DESC NULLS LAST, price_quality DESC",
+    "value": "price_as_93 ASC NULLS LAST, score DESC",
+    "score": "score DESC NULLS LAST, price_as_93 ASC",
     "price": "price_per_bottle_at_6 ASC",
 }
 CARD_COLUMNS = """offer_id, wine_id, wine, vintage, producer, colour, country, shop, price_per_bottle_at_6,
     normal_price, promotion, deal, deal_reason, score, awards, best_award, value, fair_price, price_quality,
-    verdict, gold_or_better, other_vintages_awarded, other_vintages_avg, producer_wines_awarded, producer_avg,
+    price_as_93, cheaper_than_pct, nothing_better_for_less, verdict, gold_or_better, other_vintages_awarded, other_vintages_avg, producer_wines_awarded, producer_avg,
     online_in_stock, url, grapes, category"""
 
 
@@ -98,6 +99,8 @@ def _decorate(conn, cards):
             tags.append("Deal")
         if c["gold_or_better"] == "yes":
             tags.append("Gold or better")
+        if c["nothing_better_for_less"] == "yes":
+            tags.append("Nothing better for less")
         if (c["other_vintages_awarded"] or 0) >= 2 or (c["producer_wines_awarded"] or 0) >= 3:
             tags.append("Wins every year")
         if c["online_in_stock"] == "no":
@@ -107,19 +110,39 @@ def _decorate(conn, cards):
 
 
 def price_rule(conn) -> dict:
-    pct = _setting(conn, "price_per_point_pct", "35")
+    """Loes's own rate per point, and what the shops' award wines show (for information)."""
+    from .scores import rate_pct
+    rate = rate_pct(conn)
     n = int(_setting(conn, "price_fit_wines", "0") or 0)
-    return {"per_point_pct": int(pct), "fit_wines": n, "learned": n > 0}
+    market = _setting(conn, "price_per_point_pct")
+    award_wines = conn.execute("SELECT COUNT(DISTINCT wine_id) FROM best_buys WHERE score IS NOT NULL").fetchone()[0]
+    return {"rate_pct": rate, "rate": f"{rate:g}", "example": round(10 * (1 + rate / 100), 2),
+            "shops_pct": int(market) if market and n else None, "fit_wines": n, "award_wines": award_wines}
+
+
+def set_rate(conn, pct) -> float:
+    """Save Loes's rate per point and work out all values again."""
+    from .scores import RATE_RANGE, recompute
+    pct = min(max(float(str(pct).replace(",", ".")), RATE_RANGE[0]), RATE_RANGE[1])
+    conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('points_rate_pct', ?)", (f"{pct:g}",))
+    conn.commit()
+    old = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        recompute(conn)
+    finally:
+        conn.row_factory = old
+    return pct
 
 
 def home(conn) -> dict:
     gold = _rows(conn, f"""SELECT {CARD_COLUMNS} FROM best_buys
         WHERE gold_or_better = 'yes' AND online_in_stock IS NOT 'no'
-        ORDER BY price_quality DESC NULLS LAST LIMIT 6""")
+        ORDER BY price_as_93 ASC NULLS LAST LIMIT 6""")
     seen = {c["offer_id"] for c in gold}
     deals = [c for c in _rows(conn, f"""SELECT {CARD_COLUMNS} FROM best_buys
         WHERE deal = 'yes' AND score IS NOT NULL AND online_in_stock IS NOT 'no'
-        ORDER BY price_quality DESC NULLS LAST LIMIT 12""") if c["offer_id"] not in seen][:6]
+        ORDER BY price_as_93 ASC NULLS LAST LIMIT 12""") if c["offer_id"] not in seen][:6]
     counts = conn.execute(
         """SELECT COUNT(*), SUM(score IS NOT NULL), SUM(deal = 'yes' AND score IS NOT NULL),
                   SUM(gold_or_better = 'yes') FROM best_buys""").fetchone()
@@ -273,12 +296,14 @@ def wine(conn, wine_id: int) -> dict | None:
         p = offers[0]["price_per_bottle_at_6"]
         better = _decorate(conn, _rows(conn, f"""SELECT {CARD_COLUMNS} FROM best_buys
             WHERE wine_id != ? AND colour IS ? AND score IS NOT NULL AND online_in_stock IS NOT 'no'
-              AND price_per_bottle_at_6 BETWEEN ? AND ? AND price_quality > ?
-            ORDER BY price_quality DESC LIMIT 3""",
-            (wine_id, w["colour"], p * 0.75, p * 1.25, offers[0]["price_quality"] or 0)))
+              AND price_per_bottle_at_6 BETWEEN ? AND ? AND price_as_93 < ?
+            ORDER BY price_as_93 LIMIT 3""",
+            (wine_id, w["colour"], p * 0.75, p * 1.25, offers[0]["price_as_93"] or 0)))
     watched = conn.execute("SELECT 1 FROM watch WHERE wine_id=?", (wine_id,)).fetchone() is not None
+    rule = price_rule(conn)
+    chart = value_chart(conn, w["colour"], wine_id, rule["rate_pct"]) if w["score"] else None
     return {"wine": w, "offers": offers, "awards": awards, "other_vintages": other_vintages,
-            "history": history, "better": better, "watched": watched, "rule": price_rule(conn)}
+            "history": history, "better": better, "watched": watched, "rule": rule, "chart": chart}
 
 
 def order(conn) -> dict:
@@ -379,7 +404,49 @@ def money(x) -> str:
     return "€" + f"{x:,.2f}"
 
 
-def fair_example(per_point_pct: int, price: float = 10.0) -> float:
-    """What one point more 'should' cost, for the explanation text."""
-    return round(price * (1 + per_point_pct / 100), 2)
+def value_chart(conn, colour, highlight_wine: int | None = None, rate_pct: float = 20.0,
+                width=340, height=230, pad=34) -> dict | None:
+    """Price (log scale) against score for every award wine of one colour, cheapest offer per wine.
+    Returns SVG coordinates: dots, the 'nothing better for less' line, and the wine's equal-value line."""
+    rows = conn.execute("""SELECT wine_id, MIN(price_per_bottle_at_6) AS price, score,
+                                  MAX(nothing_better_for_less = 'yes') AS best
+                           FROM best_buys WHERE score IS NOT NULL AND colour IS ? AND price_per_bottle_at_6 > 0
+                           GROUP BY wine_id""", (colour,)).fetchall()
+    if len(rows) < 3:
+        return None
+    prices = [r[1] for r in rows]
+    scores_ = [r[2] for r in rows]
+    lo_p, hi_p = math.log(min(prices) * 0.9), math.log(max(prices) * 1.1)
+    lo_s, hi_s = math.floor(min(scores_)) - 0.5, math.ceil(max(scores_)) + 0.5
+
+    def xy(score, price):
+        x = pad + (score - lo_s) / (hi_s - lo_s) * (width - pad - 8)
+        y = height - pad + 6 - (math.log(price) - lo_p) / (hi_p - lo_p) * (height - pad - 6)
+        return round(x, 1), round(y, 1)
+
+    dots = [{"x": xy(sc, p)[0], "y": xy(sc, p)[1], "me": wid == highlight_wine, "best": bool(best),
+             "wine_id": wid, "label": f"{sc:g} · €{p:.2f}"} for wid, p, sc, best in rows]
+    frontier = sorted(((p, sc) for _, p, sc, best in rows if best), key=lambda t: t[0])
+    path = ""
+    if len(frontier) >= 2:
+        pts = []
+        for i, (p, sc) in enumerate(frontier):
+            x, y = xy(sc, p)
+            if i:
+                pts.append(f"{px} {y}")  # step: price rises first, then the score
+            pts.append(f"{x} {y}")
+            px = x
+        path = "M" + " L".join(pts)
+    line = None
+    me = [r for r in rows if r[0] == highlight_wine]
+    if me:
+        _, p0, s0, _ = me[0]
+        r = rate_pct / 100
+        a, b = xy(lo_s, p0 * (1 + r) ** (lo_s - s0)), xy(hi_s, p0 * (1 + r) ** (hi_s - s0))
+        line = {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1]}
+    ticks_s = [{"x": xy(t, math.exp(lo_p))[0], "label": t} for t in range(math.ceil(lo_s), math.floor(hi_s) + 1, 2)]
+    ticks_p = [{"y": xy(lo_s, t)[1], "label": f"€{t:g}"} for t in (3, 5, 7.5, 10, 15, 20, 30, 50, 75, 100)
+               if lo_p <= math.log(t) <= hi_p]
+    return {"width": width, "height": height, "pad": pad, "dots": dots, "frontier": path, "line": line,
+            "ticks_s": ticks_s, "ticks_p": ticks_p, "n": len(rows)}
 

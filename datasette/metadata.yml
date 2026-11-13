@@ -24,9 +24,10 @@ databases:
         title: Best buys
         description: >-
           One line per wine per shop. Score = combined award score (empty when no silver-or-better
-          award is known). Value = score minus what you would expect at this price; above 0 is good value.
+          award is known). Price as 93 = what the wine would cost as a 93 with your rule per point (lower is better);
+          cheaper_than_pct = how many award wines in all shops are dearer on that measure.
           Prices are per bottle when you buy 6, with the shop's promotion applied.
-        sort_desc: value
+        sort: price_as_93
         facets:
           - colour
           - country
@@ -38,7 +39,11 @@ databases:
           price_6_bottles_incl_delivery: Total for 6 bottles including delivery costs
           normal_price: The shop's normal price for one bottle
           score: Combined award score on a 100-point scale
-          value: Score above (+) or below (-) what is normal at this price
+          value: Points more (+) or fewer (-) than the median award wine gives for the same money
+          price_as_93: What this wine would cost as a 93, with your rule per point (lower is better)
+          cheaper_than_pct: Share of award wines in all shops that cost more as a 93
+          nothing_better_for_less: No other wine of this colour, in stock, scores higher for the same money or less
+          fair_price: For information only - the usual price for this score in your shops (fitted line)
           other_vintages_awarded: How many other vintages of this wine won silver or better
           other_vintages_avg: Average score of those other vintages
           producer_wines_awarded: How many other wines of this producer won silver or better

@@ -92,9 +92,15 @@ async def awards(datasette, request):
 
 
 async def how(datasette, request):
+    if request.method == "POST":
+        post = await request.post_vars()
+        try:
+            await _write(datasette, ui.set_rate, post.get("rate_pct"))
+        except ValueError:
+            pass
+        return Response.redirect("/how#rate")
     rule = await _read(datasette, ui.price_rule)
-    return await _page(datasette, request, "wk_how.html", "How the scores work", rule=rule,
-                       example=ui.fair_example(rule["per_point_pct"]))
+    return await _page(datasette, request, "wk_how.html", "How the scores work", rule=rule)
 
 
 async def order(datasette, request):

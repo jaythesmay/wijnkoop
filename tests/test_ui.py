@@ -33,11 +33,23 @@ def test_fit_price_learns_and_is_clamped():
 
 
 def test_verdicts():
-    assert scores.verdict(1.6) == "Top buy"
-    assert scores.verdict(1.2) == "Good buy"
-    assert scores.verdict(0.9) == "Fair"
-    assert scores.verdict(0.5) == "Pricey for its score"
+    assert scores.verdict(0.95) == "Top buy"
+    assert scores.verdict(0.75) == "Good buy"
+    assert scores.verdict(0.5) == "Fair"
+    assert scores.verdict(0.1) == "Pricey for its score"
     assert scores.verdict(None) is None
+
+
+def test_price_as_93_her_example():
+    # "a 93 for 10 euro is maybe equal to a 94 at 12": with 20% per point they are exactly equal
+    assert round(scores.price_as(12, 94, 0.20), 2) == 10.0
+    assert round(scores.price_as(8, 91, 0.20), 2) == 11.52
+    assert scores.price_as(10, 93, 0.35) == 10
+
+
+def test_nothing_better_for_less():
+    items = [("a", 8, 90), ("b", 10, 93), ("c", 10, 91), ("d", 12, 92), ("e", 15, 95), ("f", 7, 88), ("g", 15, 95)]
+    assert scores.nothing_better_for_less(items) == {"a", "b", "e", "f", "g"}
 
 
 def test_line_cost():
@@ -85,8 +97,13 @@ def test_scores_and_gold(con):
     assert rows["Domaine Laroche Chablis"][1] == "yes"       # 93 points from a critic
     assert rows["Bodegas Olarra Crianza"][1] == "no"         # silver
     assert rows["Cantina Tollo Rosato"][0] is None           # no award, no verdict
-    muga = rows["Bodegas Muga Reserva"]
-    assert muga[2] == scores.verdict(muga[4]) and muga[4] == round(muga[3] / 10.0, 2)
+    vals = {r[0]: r[1:] for r in con.execute(
+        "SELECT wine, price_as_93, cheaper_than_pct, verdict, nothing_better_for_less, value FROM best_buys")}
+    # Muga 92.8 (IWC gold 95 pulled to 88) for EUR 10: as a 93 it costs 10 * 1.2 ** 0.2
+    muga = vals["Bodegas Muga Reserva"]
+    assert muga[0] == round(10 * 1.2 ** (93 - rows["Bodegas Muga Reserva"][0]), 2)
+    assert muga[1] == 100 and muga[2] == "Top buy" and muga[3] == "yes"
+    assert vals["Cantina Tollo Rosato"][0] is None and vals["Cantina Tollo Rosato"][1] is None
 
 
 def test_home_find_search(con):
@@ -167,9 +184,9 @@ def test_pages_render(con, tmp_path):
     for path, (status, text) in pages.items():
         assert status == (404 if path == "/wine/9999" else 200), path
     assert "Bodegas Muga Reserva" in pages["/"][1] and "Gold or better" in pages["/"][1]
-    assert "this score usually costs" in pages["/find?gold=1"][1]
+    assert "like a 93 for" in pages["/find?gold=1"][1] and "Nothing better for less" in pages["/find?gold=1"][1]
     assert "Spain" in pages["/"][1] and "Spanje" not in pages["/"][1]
-    assert "35%" in pages["/how"][1]
+    assert "20% per point" in pages["/how"][1]
     assert "IWC 2025 Gold 95 pts" in pages["/find?award=IWC&award_result=95"][1]
     assert f'<a href="/wine/{wine_id}">{wine_id} · Bodegas Muga Reserva 2021</a>' in pages["/wijnkoop/best_buys"][1]
     assert "Bodegas Muga Reserva 2021</a>" in pages["/wijnkoop/award_match"][1]
@@ -187,3 +204,22 @@ def test_award_filters(con):
         "Bodegas Muga Reserva", "Domaine Laroche Chablis"}
     assert ui.find(con, {"award": "Mundus Vini"})["cards"][0]["wine"] == "Bodegas Olarra Crianza"
     assert ui.options(con)["award_years"] == [2025]
+
+
+def test_set_rate_recomputes(con):
+    before = con.execute("SELECT price_as_93 FROM best_buys WHERE wine LIKE '%Chablis%'").fetchone()[0]
+    assert ui.price_rule(con)["rate_pct"] == 20
+    assert ui.set_rate(con, "30") == 30
+    after = con.execute("SELECT price_as_93 FROM best_buys WHERE wine LIKE '%Chablis%'").fetchone()[0]
+    assert after != before and ui.price_rule(con)["rate"] == "30"
+    assert ui.set_rate(con, 99) == 50 and con.row_factory is None
+
+
+def test_value_chart(con):
+    _, wine_id = _id(con, "Muga")
+    chart = ui.value_chart(con, "red", wine_id, 20)
+    assert chart is None  # fewer than 3 award wines of this colour
+    con.execute("UPDATE wine SET colour = 'red'")
+    con.commit()
+    chart = ui.value_chart(con, "red", wine_id, 20)
+    assert chart["n"] == 3 and sum(d["me"] for d in chart["dots"]) == 1 and chart["line"]
