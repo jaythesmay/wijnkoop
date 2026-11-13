@@ -69,6 +69,7 @@ MEDAL_SCORE_BY_COMPETITION = {
 }
 
 POINTS_RE = re.compile(r"(\d{2,3}(?:[.,]\d)?)\s*(?:/\s*100|punten|points|pts|ptn|p\b|pt\b)")
+RANGE_RE = re.compile(r"\b(\d{2,3})\s*[-–]\s*(\d{2,3})\b(?!\s*[-–/]?\s*(?:19|20)\d{2})")
 POINTS20_RE = re.compile(r"(\d{1,2}(?:[.,]\d)?)\s*/\s*20")
 YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
 
@@ -126,7 +127,11 @@ def parse_award_text(source: str, result: str = "") -> dict | None:
             medal = name
             break
     points = None
-    m = POINTS_RE.search(plain)
+    # A barrel-sample range ("96-100 punten", "(93-95)") counts as its lower end, never the top.
+    m = RANGE_RE.search(plain)
+    if m and 80 <= float(m.group(1)) < float(m.group(2)) <= 100:
+        points = float(m.group(1))
+    m = None if points else POINTS_RE.search(plain)
     if m:
         value = float(m.group(1).replace(",", "."))
         if 50 <= value <= 100:
