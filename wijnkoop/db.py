@@ -474,8 +474,10 @@ def _backup(con, path, version):
 LATER_COLUMNS = {
     "run_log": [("process", "TEXT"), ("wait_until", "TEXT")],
     # The wine's own name, without the estate (which is in producer): "Reserva Tinto" of Esporao
-    "cuvee": [("wine_name", "TEXT")],
-    "wine": [("wine_name", "TEXT")],
+    "cuvee": [("wine_name", "TEXT"),
+              ("manual_is_wine", "INTEGER")],  # set on the data quality page: wins over the shop
+    "wine": [("wine_name", "TEXT"),
+             ("manual_colour", "TEXT")],  # set on the data quality page: wins over the shop
     "award_upload": [("log", "TEXT")],
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
@@ -545,6 +547,9 @@ def connect(path=None):
     from .pace import ensure_table as ensure_pace
 
     ensure_pace(con)
+    from .quality import ensure_tables as ensure_quality
+
+    ensure_quality(con)
     _add_later_columns(con)
     fill_wine_names(con)
     con.executescript(VIEWS)

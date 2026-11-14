@@ -9,13 +9,13 @@ import io
 import os
 import re
 import time
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from datasette import hookimpl
 from datasette.utils.asgi import Response
 from markupsafe import Markup
 
-from wijnkoop import jobs, ui
+from wijnkoop import award_wines, jobs, quality, ui
 from wijnkoop.bottles import bottle_size
 from wijnkoop.awards import upload as award_upload
 from wijnkoop.db import BUSY_TIMEOUT
@@ -377,6 +377,45 @@ async def update(datasette, request):
                        saved=request.args.get("saved"), **status)
 
 
+async def quality_page(datasette, request):
+    """Data quality: what the checks found, and what you want done about it."""
+    if request.method == "POST":
+        form = parse_qs((await request.post_body()).decode("utf-8", "replace"), keep_blank_values=True)
+        one = {k: v[-1] for k, v in form.items()}
+        ids = [int(i) for v in form.get("ids", []) for i in v.split(",") if i.strip().isdigit()]
+        back = {k: one[k] for k in ("check", "state", "page") if one.get(k)}
+        if one.get("run"):
+            running = await _read(datasette, quality.running)
+            if not running:
+                quality.start_in_background()
+            said = {"said": "running" if not running else "already"}
+        elif one.get("reopen"):
+            n = await _write(datasette, quality.reopen, ids)
+            said = {"said": f"reopened {n}"}
+        else:
+            act = one.get("act") or None
+            r = await _write(datasette, quality.resolve, ids, None if act == "suggested" else act,
+                             one.get("all_of") or None)
+            if r["rescore"]:
+                quality.recompute_in_background()
+            said = {"said": f"done {r['done']}" + (f", skipped {r['skipped']}" if r["skipped"] else "")}
+            if _wants_json(request):
+                return Response.json(r)
+        return Response.redirect("/quality?" + urlencode({**back, **said}))
+    page = request.args.get("page") or "1"
+    data = await _read(datasette, quality.overview, request.args.get("check"), request.args.get("state") or "open",
+                       int(page) if page.isdigit() else 1)
+    return await _page(datasette, request, "wk_quality.html", "Data quality", said=request.args.get("said"), **data)
+
+
+async def awards_not_sold(datasette, request):
+    a = request.args
+    page = a.get("page") or "1"
+    data = await _read(datasette, award_wines.not_sold, a.get("q") or "", a.get("colour") or "",
+                       a.get("competition") or "", a.get("gold") or "", int(page) if page.isdigit() else 1)
+    return await _page(datasette, request, "wk_award_wines.html", "Award wines not in your shops", **data)
+
+
 @hookimpl
 def prepare_connection(conn, database):
     """Wait for a shop run that is saving (its scores take a while) instead of failing with
@@ -399,6 +438,8 @@ def register_routes():
         (r"^/week$", week),
         (r"^/watchlist$", watchlist),
         (r"^/awards$", awards),
+        (r"^/awards/not-sold$", awards_not_sold),
+        (r"^/quality$", quality_page),
         (r"^/how$", how),
         (r"^/upload$", upload),
         (r"^/upload/(?P<upload_id>\d+)$", upload_report),
