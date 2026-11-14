@@ -256,6 +256,9 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
         resumable = resumable_run(con, key, now) if not s["running"] else None
         paused = paused_run(con, key, now) if not s["running"] else None
         s["pace"] = pace.describe(con, module)
+        from .health import warning
+
+        s["warning"] = warning(con, key)
         if s["running"]:
             s["state"], s["advice"] = "running", s["running"]["note"] or "starting"
         elif paused and not s["queued"]:

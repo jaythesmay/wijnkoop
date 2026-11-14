@@ -1,15 +1,23 @@
 """Wijnvoordeel (wijnvoordeel.nl); Wijnbeurs runs on the same shop software (see wijnbeurs.py).
 
-The product pages show their price only after the page's own JavaScript has run, so these
-shops are read with BrowserClient (a headless browser), 20 s apart as robots.txt asks.
+The product pages show their price only after the page's own JavaScript has run: that
+JavaScript asks the shop's product service (Adobe Commerce, GraphQL at /api/.../graphql, which
+robots.txt allows) for the product. WijnKoop asks the same service directly, without a browser:
+the whole shop (about 370 or 520 products) in 4 to 6 requests of 100 products, 20 s apart as
+robots.txt asks. The address and the few headers the service needs come from the shop's own
+/config.json, read at the start of every run. A product missing there is asked for on its own.
+
+parse_product also still reads a rendered page (the older way, kept for the tests and as a record):
 A rendered page gives: the name (h1), "2024 | Frankrijk, Bordeaux" (vintage, country,
 region), the price per bottle ("Per doos van 6"), stock, a specification list (grapes,
 alcohol, classification) and medal images whose file names name the medal
 ("concours-international-lyon-goud-1-7_33.png"). The page names no colour: it comes from the
 name and the grapes.
 """
+import datetime as dt
+import json
 import re
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
@@ -21,7 +29,9 @@ BASE = "https://www.wijnvoordeel.nl"
 PACE = 20  # crawl-delay in its robots.txt (November 2026); a longer one read at the start of a run wins
 PACE_WHY = "the shop's robots.txt asks for this"
 SITEMAP = BASE + "/products.xml"
-NEEDS_BROWSER = True
+NEEDS_BROWSER = False  # read through the shop's product service since November 2026
+PAGE_SIZE = 100  # products per request; the service refuses 500
+MAX_PAGES = 50
 
 URL_RE = re.compile(r"^https://www\.(?:wijnvoordeel|wijnbeurs)\.nl/products/(?P<slug>[^/?#]+)$")
 SPECS = {"classificatie": "appellation", "druivenras": "grapes", "alcoholgehalte": "alcohol",
@@ -57,6 +67,123 @@ def product_urls(xml: str) -> list[str]:
 def list_products(client, sitemap=SITEMAP) -> list[tuple[str, str]]:
     urls = dict.fromkeys(product_urls(client.get(sitemap)))
     return [(u, parse_url(u)["product_id"]) for u in urls]
+
+
+# --- the shop's product service -----------------------------------------------------------
+
+VIEW_FIELDS = """__typename sku name urlKey inStock attributes(roles: []) { name value }
+  ... on SimpleProductView { price { regular { amount { value } } final { amount { value } } }
+                             stock_is_in_stock stock_is_salable }"""
+ALL_QUERY = ("query WijnKoopProducts($page: Int!, $size: Int!) { productSearch(phrase: \"\", page_size: $size, "
+             "current_page: $page) { total_count page_info { total_pages } items { productView { "
+             + VIEW_FIELDS + " } } } }")
+ONE_QUERY = ("query WijnKoopProduct($urlKey: String!) { productSearch(phrase: \"\", filter: [{ attribute: \"url_key\", "
+             "eq: $urlKey }], page_size: 2) { items { productView { " + VIEW_FIELDS + " } } } }")
+
+
+def service(client, base: str) -> tuple[str, dict]:
+    """(address, headers) of the shop's product service, from its own /config.json."""
+    cached = getattr(client, "_commerce", None)
+    if cached:
+        return cached
+    conf = json.loads(client.get(base + "/config.json"))["public"]["default"]
+    headers = {**conf["headers"].get("all", {}), **conf["headers"].get("cs", {}), "Accept": "application/json"}
+    client._commerce = (conf["commerce-endpoint"], headers)
+    return client._commerce
+
+
+def _ask(client, base: str, query: str, variables: dict) -> dict:
+    endpoint, headers = service(client, base)
+    url = endpoint + "?" + urlencode({"query": query, "variables": json.dumps(variables, separators=(",", ":"))})
+    data = json.loads(client.get(url, headers=headers))
+    if data.get("errors"):
+        raise RuntimeError(f"product service: {data['errors'][0].get('message')}")
+    return data["data"]["productSearch"]
+
+
+def prefetch(client, base: str = BASE) -> dict[str, str]:
+    """The whole shop in a few requests: {url key: the product as JSON text}."""
+    out = {}
+    for page in range(1, MAX_PAGES + 1):
+        found = _ask(client, base, ALL_QUERY, {"page": page, "size": PAGE_SIZE})
+        for item in found.get("items") or []:
+            view = item.get("productView") or {}
+            if view.get("urlKey"):
+                out[view["urlKey"]] = json.dumps(view)
+        if page >= ((found.get("page_info") or {}).get("total_pages") or 1):
+            break
+    return out
+
+
+def fetch_page(client, url: str, base: str | None = None) -> str:
+    """One product that was not in the shop-wide answer, by its url key."""
+    base = base or ("https://" + url.split("/")[2])
+    items = _ask(client, base, ONE_QUERY, {"urlKey": parse_url(url)["product_id"]}).get("items") or []
+    if not items:  # in the sitemap but no longer sold: skipped like a non-wine, not a failure
+        return json.dumps({"urlKey": parse_url(url)["product_id"], "name": None, "attributes": []})
+    return json.dumps(items[0]["productView"])
+
+
+COLOURS = {"rood": "red", "wit": "white", "rosé": "rosé", "rose": "rosé", "port": "red"}
+
+
+def _attr(view: dict, name: str):
+    return next((a.get("value") for a in view.get("attributes") or [] if a.get("name") == name), None)
+
+
+def _text(value) -> str | None:
+    if isinstance(value, list):
+        value = ", ".join(str(v) for v in value if v)
+    value = re.sub(r"\s+", " ", str(value)).strip() if value not in (None, "", "no_selection") else ""
+    return value or None
+
+
+def parse_view(url: str, view: dict) -> Product:
+    """A product as the shop's product service gives it."""
+    info = parse_url(url) or {"product_id": view.get("urlKey") or url.rstrip("/").rsplit("/", 1)[-1]}
+    title = _text(view.get("name")) or info["product_id"].replace("-", " ")
+    specs = {}
+    for key, name in (("vintage", "pf_vintage"), ("country", "pf_country"), ("region", "pf_region"),
+                      ("appellation", "pf_classification"), ("grapes", "pf_grape"), ("style", "tasteindex"),
+                      ("drink_until", "pf_todrinktill"), ("box", "import_bottlespercase"),
+                      ("alcohol", "pf_alcohol")):
+        value = _text(_attr(view, name))
+        if value:
+            specs[key] = value
+    if not re.fullmatch(r"(19|20)\d{2}", specs.get("vintage", "")):
+        specs.pop("vintage", None)
+    if view.get("sku"):
+        specs["sku"] = view["sku"]
+    price = ((view.get("price") or {}).get("final") or {}).get("amount", {}).get("value")
+    regular = ((view.get("price") or {}).get("regular") or {}).get("amount", {}).get("value")
+    was = regular if regular and price and regular > price else None
+    in_stock = view.get("stock_is_in_stock")
+    if in_stock is None:
+        in_stock = view.get("inStock")
+    if not in_stock and view.get("stock_is_salable"):
+        specs["presale"] = "yes"  # can be ordered, delivered later
+        in_stock = False
+    colour_word = str(_attr(view, "color") or "").lower()
+    colour = COLOURS.get(colour_word) or colour_for(title, specs.get("grapes"))
+    if colour_word == "mix":
+        colour = None
+    try:
+        volume = round(float(_attr(view, "p_vpe_content")) * 100, 1)
+    except (TypeError, ValueError):
+        volume = 0
+    awards = []
+    for i in range(1, 11):
+        image = _text(_attr(view, f"product_medal_{i}"))
+        words = medal_from_image(image) if image else None
+        if words:
+            awards.append((words, ""))
+    package = str(_attr(view, "p_is_package") or "0") == "1"
+    return Product(
+        url=url, product_id=info["product_id"], title=title, colour=colour,
+        volume_cl=volume if 10 <= volume <= 600 else 75.0, price=price, promotion=None,
+        in_stock_online=None if in_stock is None else bool(in_stock), was_price=was,
+        category="pakket" if package else "wijn", expert_awards=awards, specs=specs,
+    )
 
 
 def _money(node) -> float | None:
@@ -104,6 +231,8 @@ def medal_from_image(src: str) -> str | None:
 
 
 def parse_product(url: str, html: str) -> Product:
+    if html.lstrip().startswith("{"):
+        return parse_view(url, json.loads(html))
     tree = HTMLParser(html)
     info = parse_url(url) or {"product_id": url.rstrip("/").rsplit("/", 1)[-1], "slug": ""}
     main = tree.css_first(".product-details__right-column") or tree.body
@@ -164,6 +293,8 @@ def parse_product(url: str, html: str) -> Product:
 
 
 def is_wine_product(p: Product) -> bool:
+    if p.category == "pakket":
+        return False
     if not (p.price and p.colour) or NOT_WINE.search(p.title) or NOT_WINE.search(p.url):
         return False
     return p.is_wine

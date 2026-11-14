@@ -226,6 +226,9 @@ def test_failure_reason_has_no_address():
 
 
 def test_limits_make_runs_wait(con, monkeypatch):
+    # No shop needs a browser any more; the limit still works for one that would.
+    for key in ("wijnvoordeel", "wijnbeurs"):
+        monkeypatch.setattr(SHOPS[key], "NEEDS_BROWSER", True)
     browser = [k for k in SHOPS if jobs.needs_browser(k)]
     plain = [k for k in SHOPS if not jobs.needs_browser(k)]
     assert jobs.limits(con) == {"max_runs": 2, "max_browser_runs": 1}

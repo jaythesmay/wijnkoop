@@ -45,17 +45,20 @@ class PoliteClient:
         self.last_status = None
         self._calm = 0  # pages read since the last refusal
 
+    def close(self) -> None:
+        self.client.close()
+
     def allowed(self, url: str) -> bool:
         return self.robots.can_fetch(USER_AGENT, url)
 
-    def get(self, url: str, retries: int = 3) -> str:
-        return self._fetch(url, retries).text
+    def get(self, url: str, retries: int = 3, headers: dict | None = None) -> str:
+        return self._fetch(url, retries, headers).text
 
     def get_bytes(self, url: str, retries: int = 3) -> bytes:
         """For compressed sitemaps (.xml.gz)."""
         return self._fetch(url, retries).content
 
-    def _fetch(self, url: str, retries: int = 3):
+    def _fetch(self, url: str, retries: int = 3, headers: dict | None = None):
         if not self.allowed(url):
             raise NotAllowed(url)
         for attempt in range(retries):
@@ -64,7 +67,7 @@ class PoliteClient:
                 time.sleep(wait)
             self._last = time.monotonic()
             try:
-                resp = self.client.get(url)
+                resp = self.client.get(url, headers=headers)
             except httpx.TransportError:
                 if attempt == retries - 1:
                     raise

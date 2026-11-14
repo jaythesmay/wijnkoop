@@ -88,11 +88,16 @@ def _money(x):
     return f"€ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if x is not None else ""
 
 
-def render(sections, today: dt.date, app_url: str = "") -> tuple[str, str]:
-    """Return (plain text, html)."""
+def render(sections, today: dt.date, app_url: str = "", warnings=None) -> tuple[str, str]:
+    """Return (plain text, html). warnings: [(shop, text)] for shops that may have changed their site."""
     head = f"WijnKoop weekly overview, {today.strftime('%-d %B %Y')}"
     text = [head, ""]
     parts = [f"<h2 style='font-family:sans-serif'>{html.escape(head)}</h2>"]
+    if warnings:
+        text += ["Shops to check", "--------------"] + [f"* {shop}: {w}" for shop, w in warnings] + [""]
+        parts.append("<h3 style='font-family:sans-serif;color:#b3261e'>Shops to check</h3><ul style='font-family:sans-serif'>"
+                     + "".join(f"<li><b>{html.escape(shop)}</b>: {html.escape(w)}</li>" for shop, w in warnings)
+                     + "</ul>")
     if not sections:
         text.append("Nothing new among the wines with a score this week.")
         parts.append("<p style='font-family:sans-serif'>Nothing new among the wines with a score this week.</p>")
@@ -141,7 +146,9 @@ def send_overview(con, today: dt.date | None = None, settings: dict | None = Non
     settings = settings or load_settings()
     if not settings:
         return "no mail settings yet (run: python -m wijnkoop mail-setup)"
-    text, html_body = render(overview(con, today), today, settings.get("app_url", "").rstrip("/"))
+    from .health import warnings
+
+    text, html_body = render(overview(con, today), today, settings.get("app_url", "").rstrip("/"), warnings(con))
     msg = EmailMessage()
     msg["Subject"] = f"WijnKoop: week of {today.strftime('%-d %B')}"
     msg["From"] = settings["username"]
