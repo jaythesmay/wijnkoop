@@ -162,11 +162,11 @@ async def upload(datasette, request):
                 UPLOAD_PROGRESS.pop(old, None)
         since = time.time()
         if job:  # until the database is free (a shop run may be saving)
-            UPLOAD_PROGRESS[job] = {"step": "wait", "since": since}
+            UPLOAD_PROGRESS[job] = {"step": "wait", "since": since, "filename": filename}
 
         def progress(step, **details):
             if job:
-                UPLOAD_PROGRESS[job] = {"step": step, "since": since, **details}
+                UPLOAD_PROGRESS[job] = {"step": step, "since": since, "filename": filename, **details}
 
         data = await request.post_body()
         try:
@@ -215,6 +215,29 @@ async def upload_csv(datasette, request):
     name = re.sub(r"[^\w.-]+", "_", names[0].rsplit(".", 1)[0]) + "-report.csv"
     return Response("\ufeff" + buf.getvalue(), content_type="text/csv; charset=utf-8",
                     headers={"content-disposition": f'attachment; filename="{name}"'})
+
+
+def _uploads_running() -> list[dict]:
+    out = []
+    for p in list(UPLOAD_PROGRESS.values()):
+        t = _progress_text(p)
+        now = next((x for x in t["steps"] if x["state"] == "now"), None)
+        step = "waiting for the database" if t["waiting"] else (now["label"].lower() if now else p.get("step"))
+        detail = f" · {now['detail']}" if now and now["detail"] else ""
+        out.append({"text": f"Upload {p.get('filename', '')}: {step}{detail} ({t['elapsed']})", "waiting": t["waiting"]})
+    return out
+
+
+async def activity_page(datasette, request):
+    """What the app is doing now: processes, disk and database, running and waiting work."""
+    return await _page(datasette, request, "wk_activity.html", "What WijnKoop is doing")
+
+
+async def activity_json(datasette, request):
+    from wijnkoop import activity
+
+    data = await _read(datasette, activity.snapshot, _uploads_running())
+    return Response.json(data, default=str)
 
 
 async def upload_file(datasette, request):
@@ -329,6 +352,8 @@ def register_routes():
         (r"^/upload/(?P<upload_id>\d+)/file$", upload_file),
         (r"^/upload/(?P<upload_id>\d+)/report\.csv$", upload_csv),
         (r"^/upload/progress$", upload_progress),
+        (r"^/activity$", activity_page),
+        (r"^/activity\.json$", activity_json),
         (r"^/order$", order),
         (r"^/order/add$", order_add),
         (r"^/watch$", watch),
