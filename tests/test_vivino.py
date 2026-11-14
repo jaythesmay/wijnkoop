@@ -131,3 +131,108 @@ def test_searches_leave_out_vintage_and_bottle_size():
     assert search_name("Chablis Premier Cru halve fles") == "Chablis Premier Cru"
     assert search_link("Muga Reserva 2019", 2019) == "https://www.vivino.com/search/wines?q=Muga+Reserva"
     assert query_for("Muga Reserva", 2019) == "site:vivino.com Muga Reserva"
+
+
+def _shop(con, i, title, price=12.0):
+    g = GallProduct(url=f"https://www.gall.nl/w-{i}.html", product_id=str(i), title=title, colour="red", volume_cl=75,
+                    price=price, in_stock_online=True, specs={"vintage": "2020", "producer": title.split()[0]})
+    save_product(con, 1, g, TODAY.isoformat())
+    return con.execute("SELECT wine_id FROM offer WHERE shop_product_id=?", (str(i),)).fetchone()[0]
+
+
+def importer_wine(con, cuvee_id, vintage):
+    from wijnkoop.awards import importer
+
+    return importer.Matcher(con).wine_for(cuvee_id, vintage)
+
+
+def test_weekly_look_ups_and_light_score(tmp_path, monkeypatch):
+    from wijnkoop import scores
+
+    con = db.connect(tmp_path / "t.db")
+    catena = _shop(con, 1, "Catena Zapata Malbec Argentino", 29.99)
+    other = _shop(con, 2, "Trivento Malbec")
+    watched = _shop(con, 3, "Muga Reserva")
+    con.execute("INSERT INTO watch (wine_id) VALUES (?)", (watched,))
+    scores.recompute(con, TODAY)
+    # the watchlist first, then wines without awards
+    assert vivino.wines_to_look_up(con, 10, TODAY)[0] == watched
+    monkeypatch.setattr(vivino, "load_key", lambda path=None: "secret")
+    assert vivino.weekly_due(con, dt.datetime(2026, 11, 13, 9))
+    monkeypatch.setattr(vivino, "WEEKLY", 2)
+    r = vivino.run_weekly(con, client=FakeHttp(CATENA), today=TODAY)
+    assert r["looked_up"] == 2 and vivino.searches_this_month(con, TODAY) == 2
+    assert not vivino.weekly_due(con, dt.datetime.now())
+    vivino.run_weekly(con, client=FakeHttp(CATENA), today=TODAY)  # the rest; checked ones are not searched again
+    assert vivino.searches_this_month(con, TODAY) == 3
+
+    def overall():
+        scores.recompute(con, TODAY)
+        return con.execute("SELECT overall, gold, best_award FROM wine_score WHERE wine_id=?", (catena,)).fetchone()
+
+    # 4.3 counts as 93; 2,150 ratings for this vintage: as much as a big critic
+    row = con.execute("SELECT rating_vintage, ratings_count FROM vivino_rating WHERE wine_id=?", (catena,)).fetchone()
+    assert tuple(row) == (2020, 2150)  # ?year=2020 in the result's address: this vintage
+    s = overall()
+    assert round(s[0], 1) == round((1.0 * 93 + 0.5 * 88) / 1.5, 1) and s[1] == 0 and s[2].startswith("Vivino 4.3")
+    data = ui.wine(con, catena)["vivino"]
+    assert data["counts"] and data["points"] == 93 and data["weight_pct"] == 100
+    # a rating of the wine as a whole (all vintages), with many ratings: a bit less
+    con.execute("UPDATE vivino_rating SET rating_vintage = NULL WHERE wine_id=?", (catena,))
+    assert round(overall()[0], 1) == round((0.6 * 93 + 0.5 * 88) / 1.1, 1)
+    # few ratings for this vintage, many for another vintage of the same wine: also a bit less
+    con.execute("UPDATE vivino_rating SET rating_vintage = 2020, ratings_count = 40 WHERE wine_id=?", (catena,))
+    cuvee = con.execute("SELECT cuvee_id FROM wine WHERE id=?", (catena,)).fetchone()[0]
+    older = importer_wine(con, cuvee, 2018)
+    con.execute("INSERT INTO vivino_rating (wine_id, rating, ratings_count, rating_vintage, checked_on) "
+                "VALUES (?, 4.1, 3000, 2018, ?)", (older, TODAY.isoformat()))
+    assert round(overall()[0], 1) == round((0.6 * 93 + 0.5 * 88) / 1.1, 1)
+    # few everywhere: very lightly; fewer than 10: not at all
+    con.execute("UPDATE vivino_rating SET ratings_count = 30 WHERE wine_id=?", (older,))
+    assert round(overall()[0], 1) == round((0.15 * 93 + 0.5 * 88) / 0.65, 1)
+    assert "only 40 ratings" in ui.wine(con, catena)["vivino"]["why"]
+    con.execute("UPDATE vivino_rating SET ratings_count = 5")
+    assert overall()[0] is None and not ui.wine(con, catena)["vivino"]["counts"]
+    assert other in [r[0] for r in con.execute("SELECT wine_id FROM vivino_rating")]
+
+
+def test_a_refused_key_stops_the_week(tmp_path):
+    import httpx
+
+    con = db.connect(tmp_path / "t.db")
+    for i in range(3):
+        _shop(con, i, f"Wine{i} Malbec")
+
+    class Refused:
+        calls = 0
+
+        def get(self, url, params=None, headers=None):
+            Refused.calls += 1
+            req = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError("429", request=req, response=httpx.Response(429, request=req))
+
+    r = vivino.run_weekly(con, key="secret", client=Refused(), today=TODAY)
+    assert (r["looked_up"], r["failed"], Refused.calls) == (0, 1, 1)
+    assert "429" in con.execute("SELECT note FROM run_log WHERE job='vivino'").fetchone()[0]
+
+
+def test_wine_page_says_how_vivino_counts(tmp_path):
+    import asyncio
+    from pathlib import Path
+
+    from datasette.app import Datasette
+    from wijnkoop import scores
+
+    con = db.connect(tmp_path / "wijnkoop.db")
+    wine_id = _shop(con, 1, "Catena Zapata Malbec Argentino", 29.99)
+    vivino.look_up(con, "secret", wine_id, client=FakeHttp(CATENA), today=TODAY)
+    con.execute("UPDATE vivino_rating SET price = 35.0")
+    scores.recompute(con, TODAY)
+    con.close()
+    root = Path(__file__).parent.parent
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(root / "datasette" / "plugins"),
+                   template_dir=str(root / "datasette" / "templates"))
+    page = asyncio.run(ds.client.get(f"/wine/{wine_id}"))
+    assert page.status_code == 200
+    assert "counts as 93 points with 100% weight (2,150 ratings for this vintage)" in page.text
+    assert "a reference price, not an offer" in page.text and "% cheaper here" in page.text

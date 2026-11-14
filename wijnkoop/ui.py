@@ -315,6 +315,15 @@ def wine(conn, wine_id: int) -> dict | None:
     except sqlite3.OperationalError:  # database not upgraded yet
         viv = []
     vivino = {"rating": viv[0] if viv else None, "search": vivino_search_link(w["name"], w["vintage"])}
+    if viv and viv[0]["rating"]:
+        from . import vivino as viv_mod
+
+        c = viv_mod.counted(conn, wine_id)
+        vivino["points"] = viv_mod.points(viv[0]["rating"])
+        vivino["counts"] = bool(c)
+        vivino["weight_pct"] = round(c[0]["weight"] * 100) if c else 0
+        vivino["why"] = c[0]["why"] if c else None
+        vivino["min_ratings"] = viv_mod.MIN_RATINGS
     return {"wine": w, "offers": offers, "awards": awards, "other_vintages": other_vintages,
             "history": history, "better": better, "watched": watched, "rule": rule, "chart": chart,
             "vivino": vivino}

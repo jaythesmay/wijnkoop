@@ -154,6 +154,18 @@ def _wine_scores(con, now):
         if s >= GOLD_POINTS:
             gold.add(r["wine_id"])
 
+    # The Vivino rating of the public counts lightly, as a small competition, never as gold.
+    from . import vivino
+
+    for v in vivino.counted(con):
+        if v["wine_id"] not in info:
+            r = con.execute("""SELECT w.cuvee_id, c.producer_key FROM wine w LEFT JOIN cuvee c ON c.id = w.cuvee_id
+                               WHERE w.id = ?""", (v["wine_id"],)).fetchone()
+            if not r:
+                continue
+            info[v["wine_id"]] = (r[0], r[1])
+        per_wine[v["wine_id"]].append((v["points"], v["weight"], v["label"]))
+
     wine_overall = {w: overall([(s, wt) for s, wt, _ in v]) for w, v in per_wine.items()}
     by_cuvee = defaultdict(dict)
     by_producer = defaultdict(dict)
