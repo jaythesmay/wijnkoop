@@ -329,11 +329,31 @@ def failure_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {text}"[:200] if text else type(exc).__name__
 
 
-def fetch_page(shop, client, url: str) -> str:
-    """The page a shop's parse_product reads: the product page itself, or what the shop's own
-    fetch_page fetches for it (a Shopify shop's small product JSON instead of the full page)."""
+def fetch_page(shop, client, url: str, prefetched: dict | None = None, pid: str | None = None) -> str:
+    """The page a shop's parse_product reads: what the shop gave in bulk at the start of the run
+    (prefetched), the product page itself, or what the shop's own fetch_page fetches for it (a
+    Shopify shop's small product JSON instead of the full page)."""
+    if prefetched and pid in prefetched:
+        return prefetched.pop(pid)
     own = getattr(shop, "fetch_page", None)
     return own(client, url) if own else client.get(url)
+
+
+def prefetch(shop, client) -> dict:
+    """Shops that can give many products per request (Shopify's /products.json) do so once at the
+    start; a failure there only means every page is read one by one as before."""
+    bulk = getattr(shop, "prefetch", None)
+    if not bulk:
+        return {}
+    try:
+        got = bulk(client)
+        log.info("%s: %d products read in bulk", shop.SHOP_NAME, len(got))
+        return got
+    except ShopSaysWait:
+        raise
+    except Exception as exc:
+        log.warning("%s: reading in bulk failed (%s); reading page by page", shop.SHOP_NAME, exc)
+        return {}
 
 
 def make_client(shop):
@@ -376,6 +396,7 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
         con.commit()
         log.info("%s: waiting %.0f s between pages", name, client.delay)
         products = shop.list_products(client)
+        prefetched = prefetch(shop, client)
     except ShopSaysWait as exc:
         return _pause(shop, con, run_id, client, exc, ok, failed, "", own_client)
     log.info("%s: %d product pages to read", name, len(products))
@@ -403,7 +424,7 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     paused = None
     for i, (url, pid) in enumerate(products, already + 1):
         try:
-            product = shop.parse_product(url, fetch_page(shop, client, url))
+            product = shop.parse_product(url, fetch_page(shop, client, url, prefetched, pid))
             if is_wine and not is_wine(product):
                 # glasses, tastings, spirits: remember the page so a resumed run skips it
                 con.execute("INSERT OR REPLACE INTO skipped_page (shop_id, shop_product_id, seen_on) VALUES (?,?,?)",
@@ -475,13 +496,14 @@ def _pause(shop, con, run_id, client, exc, ok, failed, read, own_client) -> dict
 
 def _after_pages(con, name):
     from .awards.upload import relink_uploads
-    from .scores import recompute
+    from .scores import mark_dirty
 
     n = relink_uploads(con)
     if n:
         log.info("%s: %d awards from your uploaded results files now linked to new wines", name, n)
-
-    recompute(con)
+    # The scores are worked out once when no shop is being read any more (the scheduler does it),
+    # not after every shop.
+    mark_dirty(con)
 
 
 def collect_gall(limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:

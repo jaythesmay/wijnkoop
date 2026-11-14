@@ -53,6 +53,45 @@ def fetch_page(client, url: str) -> str:
     return client.get(url.rstrip("/") + ".js")
 
 
+BULK_SIZE = 250  # the most products Shopify gives per page of /products.json
+BULK_MAX_PAGES = 200
+
+
+def _cents(value) -> int | None:
+    try:
+        return round(float(value) * 100)
+    except (TypeError, ValueError):
+        return None
+
+
+def as_product_js(item: dict) -> dict:
+    """One product of /products.json in the shape of <product page>.js, so parse_product reads both."""
+    variants = [{"title": v.get("title"), "price": _cents(v.get("price")),
+                 "compare_at_price": _cents(v.get("compare_at_price")), "available": v.get("available")}
+                for v in item.get("variants") or []]
+    first = variants[0] if variants else {}
+    return {"handle": item.get("handle"), "title": item.get("title"), "vendor": item.get("vendor"),
+            "type": item.get("product_type"), "tags": item.get("tags") or [],
+            "description": item.get("body_html"), "variants": variants, "price": first.get("price"),
+            "compare_at_price": first.get("compare_at_price"),
+            "available": any(v.get("available") for v in variants) if variants else None}
+
+
+def prefetch(client, base: str) -> dict[str, str]:
+    """Every product with its price in a few requests: /products.json gives 250 products per page,
+    so a shop of 2,900 wines takes about 12 requests instead of 2,900. {handle: product JSON as text}.
+    Products missing here are read one by one as before."""
+    out = {}
+    for page in range(1, BULK_MAX_PAGES + 1):
+        items = json.loads(client.get(f"{base}/products.json?limit={BULK_SIZE}&page={page}")).get("products") or []
+        for item in items:
+            if item.get("handle"):
+                out[item["handle"]] = json.dumps(as_product_js(item))
+        if len(items) < BULK_SIZE:
+            break
+    return out
+
+
 def _colour(kind: str, tags: list[str], title: str) -> str | None:
     for text in (kind, " ".join(tags)):
         for colour, pattern in COLOURS:

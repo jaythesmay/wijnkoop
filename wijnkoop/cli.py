@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 
-from . import config, db, jobs, quality, scores, vivino
+from . import backup, config, db, jobs, quality, scores, vivino
 from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_shop, fetch_page, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
@@ -60,6 +60,8 @@ def cmd_collect(args):
         collect_shop(SHOPS[key], limit=args.limit, con=con)
     if not keys:
         print("Nothing to read: every shop was read recently.")
+    elif scores.recompute_if_due(con, busy=bool(jobs.running_shops(con))):
+        print("Scores worked out again.")
     con.close()
 
 
@@ -150,7 +152,11 @@ def cmd_scheduler(args):
             if due:
                 collect_shop(SHOPS[due[0]], con=con)
                 match_awards(con)
-                scores.recompute(con)
+                continue
+            # Once, after the shops are read (or at most an hour after new prices came in).
+            if scores.recompute_if_due(con, busy=bool(jobs.running_shops(con))):
+                continue
+            if backup.run_if_due(con, now):
                 continue
             if mail_due(con, now):
                 try:
@@ -167,7 +173,7 @@ def cmd_scheduler(args):
                 continue
             if vivino.weekly_due(con, now):
                 vivino.run_weekly(con)
-                scores.recompute(con)
+                scores.mark_dirty(con)
                 continue
             if quality.weekly_due(con, now) and not quality.running(con):
                 quality.run_checks(con)

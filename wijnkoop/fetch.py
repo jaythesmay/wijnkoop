@@ -33,8 +33,10 @@ class PoliteClient:
         resp = self.client.get(self.base_url + "/robots.txt")
         if resp.status_code in (429, 503):
             raise ShopSaysWait(resp.status_code, retry_after(resp.headers.get("retry-after")))
-        resp.raise_for_status()
-        self.robots.parse(resp.text.splitlines())
+        if resp.status_code >= 500:  # the shop's server has trouble: try again later
+            raise ShopSaysWait(resp.status_code, None)
+        # No robots.txt (404, 410, ...): the standard (RFC 9309) says every page may be read.
+        self.robots.parse(resp.text.splitlines() if resp.status_code < 400 else [])
         self.robots_delay = float(self.robots.crawl_delay(USER_AGENT) or 0)
         self.delay = max(min_delay, self.robots_delay)
         self.normal_delay = self.delay

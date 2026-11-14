@@ -4,6 +4,10 @@ services:
     image: ghcr.io/jaythesmay/wijnkoop:latest
     container_name: wijnkoop
     restart: unless-stopped
+    # WijnKoop never takes the whole NAS: at most 2 processor cores and 1.5 GB of memory,
+    # whatever it is doing. Lower them if the NAS has little to spare.
+    cpus: "2.0"
+    mem_limit: 1536m
     ports:
       - "8001:8001"
     volumes:

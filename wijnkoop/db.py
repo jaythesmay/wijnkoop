@@ -514,6 +514,33 @@ def _add_later_columns(con):
     con.commit()
 
 
+# Indexes for what the pages, the scores and the runs look up most (added on start-up when missing).
+INDEXES = """
+CREATE INDEX IF NOT EXISTS ix_offer_wine ON offer(wine_id);
+CREATE INDEX IF NOT EXISTS ix_offer_shop_current ON offer(shop_id, is_current);
+CREATE INDEX IF NOT EXISTS ix_award_match_wine ON award_match(wine_id);
+CREATE INDEX IF NOT EXISTS ix_event_wine ON event(wine_id);
+CREATE INDEX IF NOT EXISTS ix_wine_cuvee ON wine(cuvee_id);
+CREATE INDEX IF NOT EXISTS ix_run_log_job ON run_log(job, finished);
+CREATE INDEX IF NOT EXISTS ix_price_history_seen ON price_history(seen_on);
+"""
+
+
+def tune(con) -> None:
+    """Settings per connection. In WAL mode synchronous=NORMAL is safe (a power cut can lose the
+    last moments, never corrupt the file) and saves a disk flush for every wine a run saves, so the
+    NAS disks are not kept busy all night."""
+    con.execute("PRAGMA synchronous = NORMAL")
+
+
+def optimize(con) -> None:
+    """Keep SQLite's query planner up to date; cheap, run after the scores are worked out."""
+    try:
+        con.execute("PRAGMA optimize")
+    except sqlite3.Error:
+        pass
+
+
 BUSY_TIMEOUT = 300  # seconds: a shop run's scores or an upload can hold the database a while
 
 
@@ -525,6 +552,7 @@ def connect(path=None):
     con = sqlite3.connect(path, timeout=BUSY_TIMEOUT)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode = WAL")
+    tune(con)
     version = con.execute("PRAGMA user_version").fetchone()[0]
     if version < SCHEMA_VERSION:
         has_offer = con.execute(
@@ -552,6 +580,7 @@ def connect(path=None):
     ensure_quality(con)
     _add_later_columns(con)
     fill_wine_names(con)
+    con.executescript(INDEXES)
     con.executescript(VIEWS)
     con.execute("PRAGMA foreign_keys = ON")
     from .reference import seed

@@ -15,6 +15,10 @@ def list_products(client):
     return shopify.list_products(client, BASE)
 
 
+def prefetch(client):
+    return shopify.prefetch(client, BASE)
+
+
 fetch_page = shopify.fetch_page
 is_wine_product = shopify.is_wine_product
 
