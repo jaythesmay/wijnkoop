@@ -4,7 +4,11 @@ Pages: / (home), /find, /search, /wine/<id>, /week, /watchlist, /order, /how, /a
 /update (read shops now).
 The data comes from wijnkoop/ui.py; the HTML from datasette/templates/wk_*.html.
 """
+import csv
+import io
 import os
+import re
+import time
 from urllib.parse import urlencode
 
 from datasette import hookimpl
@@ -99,6 +103,51 @@ def _competitions(conn):
     return [dict(r) for r in conn.execute("SELECT short, name FROM competition ORDER BY name")]
 
 
+# What each upload that is running is doing, by the code its page sent along ("job"). The page
+# asks for it every second or two while it waits. Kept in memory: it only matters while it runs.
+UPLOAD_PROGRESS: dict[str, dict] = {}
+
+
+def _progress_text(p: dict) -> dict:
+    """The steps for the page: which are done, which runs now (with numbers), how long it has taken."""
+    step = p.get("step")
+    keys = list(award_upload.STEPS)
+    now_i = keys.index(step) if step in keys else -1
+    out = []
+    for i, key in enumerate(keys):
+        detail = ""
+        if i == now_i:
+            if key == "read" and p.get("size"):
+                detail = f"{p['size'] / 1e6:.1f} MB"
+            elif key == "find" and p.get("lines") is not None:
+                detail = f"{p['lines']:,} lines"
+            elif key == "link" and p.get("total"):
+                done, total = p.get("done", 0), p["total"]
+                detail = f"{done:,} of {total:,} · {p.get('linked', 0):,} linked, {p.get('review', 0):,} probable"
+                if done and p.get("step_seconds", 0) > 3:
+                    left = p["step_seconds"] / done * (total - done)
+                    detail += f" · about {_duration(left)} left"
+        out.append({"label": award_upload.STEPS[key], "state": "done" if i < now_i else "now" if i == now_i else "todo",
+                    "detail": detail})
+    return {"step": step, "steps": out, "seconds": round(p.get("seconds", 0)), "waiting": step == "wait",
+            "elapsed": _duration(time.time() - p.get("since", time.time()))}
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min {seconds % 60:02d} s"
+    return f"{seconds // 3600} h {seconds // 60 % 60:02d} min"
+
+
+async def upload_progress(datasette, request):
+    job = request.args.get("job") or ""
+    p = UPLOAD_PROGRESS.get(job)
+    return Response.json(_progress_text(p) if p else {"step": None})
+
+
 async def upload(datasette, request):
     """Load an official results file. The browser sends the file itself as the request body,
     with its name, competition and year in the address."""
@@ -106,15 +155,30 @@ async def upload(datasette, request):
         filename = (request.args.get("filename") or "upload").strip()[:200]
         competition = (request.args.get("competition") or "").strip() or None
         year = request.args.get("year") or ""
+        job = request.args.get("job") or ""
+        job = job if re.fullmatch(r"[a-z0-9]{6,40}", job) else None
+        for old, p in list(UPLOAD_PROGRESS.items()):
+            if time.time() - p.get("since", 0) > 6 * 3600:
+                UPLOAD_PROGRESS.pop(old, None)
+        since = time.time()
+        if job:  # until the database is free (a shop run may be saving)
+            UPLOAD_PROGRESS[job] = {"step": "wait", "since": since}
+
+        def progress(step, **details):
+            if job:
+                UPLOAD_PROGRESS[job] = {"step": step, "since": since, **details}
+
         data = await request.post_body()
         try:
             report = await _write(datasette, award_upload.import_upload, filename, data, competition,
-                                  int(year) if year.isdigit() else None)
+                                  int(year) if year.isdigit() else None, None, progress)
         except Exception as e:  # unreadable file: say so on the page instead of a crash
+            UPLOAD_PROGRESS.pop(job, None)
             if _busy(e):
                 return Response.json({"error": "WijnKoop is busy saving a shop run. Nothing was loaded; "
                                                "try again in a few minutes."}, status=503)
             return Response.json({"error": str(e) or e.__class__.__name__}, status=400)
+        UPLOAD_PROGRESS.pop(job, None)
         return Response.json({"id": report["upload"]["id"], "awards": report["upload"]["awards"]})
     done = await _read(datasette, award_upload.uploads)
     comps = await _read(datasette, _competitions)
@@ -134,6 +198,23 @@ async def upload_report(datasette, request):
         return Response.html("<p>This upload is not known. <a href='/upload'>Uploads</a></p>", status=404)
     return await _page(datasette, request, "wk_upload_report.html", f"Upload: {report['upload']['filename']}",
                        **report)
+
+
+async def upload_csv(datasette, request):
+    """The detailed report: every award in the file and what happened to it, for Excel."""
+    upload_id = int(request.url_vars["upload_id"])
+    rows = await _read(datasette, award_upload.report_rows, upload_id)
+    names = await _read(datasette, lambda conn: [r[0] for r in conn.execute(
+        "SELECT filename FROM award_upload WHERE id=?", (upload_id,))])
+    if not names:
+        return Response.text("This upload is not known.", status=404)
+    buf = io.StringIO()
+    out = csv.writer(buf, delimiter=";")  # Dutch Excel opens a semicolon list as columns
+    out.writerow(award_upload.REPORT_COLUMNS)
+    out.writerows(rows)
+    name = re.sub(r"[^\w.-]+", "_", names[0].rsplit(".", 1)[0]) + "-report.csv"
+    return Response("\ufeff" + buf.getvalue(), content_type="text/csv; charset=utf-8",
+                    headers={"content-disposition": f'attachment; filename="{name}"'})
 
 
 async def upload_file(datasette, request):
@@ -246,6 +327,8 @@ def register_routes():
         (r"^/upload$", upload),
         (r"^/upload/(?P<upload_id>\d+)$", upload_report),
         (r"^/upload/(?P<upload_id>\d+)/file$", upload_file),
+        (r"^/upload/(?P<upload_id>\d+)/report\.csv$", upload_csv),
+        (r"^/upload/progress$", upload_progress),
         (r"^/order$", order),
         (r"^/order/add$", order_add),
         (r"^/watch$", watch),

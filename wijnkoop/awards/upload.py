@@ -21,6 +21,7 @@ import io
 import json
 import re
 import sqlite3
+import time
 import zipfile
 from collections import Counter
 
@@ -31,6 +32,9 @@ from ..reference import MEDALS, OTHER_COMPETITION, POINTS20_RE, competition_id, 
 
 MAX_BYTES = 40 * 1024 * 1024
 AUTO, REVIEW = 88, 75
+# The steps of reading a file, in order, as the upload page shows them while it waits.
+STEPS = {"read": "Reading the file", "find": "Finding the awards", "link": "Linking awards to wines in your shops",
+         "scores": "Recalculating the scores", "report": "Making the report"}
 
 HEADER_WORDS = {
     "name": ["wine", "wijn", "name", "naam", "product", "cuvee", "label", "vin", "wein", "vino", "description",
@@ -460,6 +464,20 @@ def _match_index(con):
     return keys
 
 
+_CHOICES: dict = {}
+
+
+def _choices(keys: dict, colour: str | None) -> dict:
+    """The shop wines an award of this colour can be (the same for every award of one upload)."""
+    cache = _CHOICES.get(id(keys))
+    if cache is None or cache[0] is not keys:
+        _CHOICES.clear()
+        cache = _CHOICES[id(keys)] = (keys, {})
+    if colour not in cache[1]:
+        cache[1][colour] = {cid: k for cid, (k, c) in keys.items() if not (colour and c and c != colour)}
+    return cache[1][colour]
+
+
 def _best(keys: dict, rec: dict) -> tuple[int | None, float]:
     name = rec["name"]
     if rec.get("producer") and norm(rec["producer"]) not in norm(name):
@@ -467,8 +485,7 @@ def _best(keys: dict, rec: dict) -> tuple[int | None, float]:
     q = cuvee_key(name)
     if not q:
         return None, 0
-    choices = {cid: k for cid, (k, colour) in keys.items()
-               if not (rec.get("colour") and colour and colour != rec["colour"])}
+    choices = _choices(keys, rec.get("colour"))
     hit = process.extractOne(q, choices, scorer=fuzz.token_sort_ratio, score_cutoff=REVIEW)
     if not hit:
         # a shorter shop name inside a longer official name ("... Reserva Especial Selección")
@@ -478,32 +495,67 @@ def _best(keys: dict, rec: dict) -> tuple[int | None, float]:
     return (hit[2], hit[1]) if hit else (None, 0)
 
 
+class _Steps:
+    """Tells the page which step is running (progress(step, **details)) and keeps how long each took."""
+
+    def __init__(self, progress=None):
+        self.progress = progress
+        self.done: list[dict] = []
+        self.step = None
+        self.started = self.step_started = time.monotonic()
+
+    def __call__(self, step: str, **details):
+        now = time.monotonic()
+        if step != self.step:
+            if self.step:
+                self.done.append({"step": STEPS[self.step], "seconds": round(now - self.step_started, 1)})
+            self.step, self.step_started = step, now
+        if self.progress:
+            self.progress(step, step_seconds=now - self.step_started, seconds=now - self.started, **details)
+
+    def finish(self) -> list[dict]:
+        self("done")
+        return self.done
+
+
 def import_upload(con, filename: str, data: bytes, competition: str | None = None, year: int | None = None,
-                  today: dt.date | None = None) -> dict:
-    """Read one results file, store its awards, link them to shop wines and check the shops' claims."""
+                  today: dt.date | None = None, progress=None) -> dict:
+    """Read one results file, store its awards, link them to shop wines and check the shops' claims.
+    progress(step, **details) is called as the work goes on: step is a key of STEPS."""
     if len(data) > MAX_BYTES:
         raise ValueError("The file is larger than 40 MB.")
+    steps = _Steps(progress)
     try:
-        report = _import(con, filename, data, competition, year, today)
+        upload_id, log = _import(con, filename, data, competition, year, today, steps)
     except Exception:
         con.rollback()
         raise
     from ..scores import recompute
 
+    steps("scores")
     try:
         recompute(con)
     except sqlite3.OperationalError:
         # A shop run holds the database for a long time: the awards are saved, and that run
         # computes the scores again when it finishes.
         con.rollback()
-    return upload_report(con, report)
+        log["scores_later"] = True
+    steps("report")
+    report = upload_report(con, upload_id)
+    log["steps"] = steps.finish()
+    con.execute("UPDATE award_upload SET log=? WHERE id=?", (json.dumps(log), upload_id))
+    con.commit()
+    report["upload"]["log"] = log
+    return report
 
 
-def _import(con, filename, data, competition, year, today) -> int:
+def _import(con, filename, data, competition, year, today, steps) -> tuple[int, dict]:
     from .importer import Matcher
 
     today_s = (today or dt.date.today()).isoformat()
+    steps("read", size=len(data))
     rows, kind = read_file(filename, data)
+    steps("find", lines=len(rows))
     records, how = records_from_rows(rows)
     found_comp, found_year = detect(filename, rows)
     comp = None
@@ -512,15 +564,20 @@ def _import(con, filename, data, competition, year, today) -> int:
                         (competition, competition)).fetchone()
         comp = tuple(r) if r else find_competition(competition) or (competition[:40], competition, "competition", 0.4)
     comp = comp or found_comp or OTHER_COMPETITION
-    year = year or found_year
+    given_year, year = year, year or found_year
     comp_id = competition_id(con, comp)
     upload_id = con.execute(
         "INSERT INTO award_upload (filename, kind, competition_id, year, uploaded_on, how, rows_read) "
         "VALUES (?,?,?,?,?,?,?)", (filename, kind, comp_id, year, today_s, how, len(rows))).lastrowid
     source_url = f"upload:{upload_id}:{filename}"
+    steps("link", done=0, total=len(records), linked=0, review=0)
     matcher, keys = Matcher(con), _match_index(con)
-    stored = linked = review = 0
-    for rec in records:
+    stored = linked = review = skipped = 0
+    last = time.monotonic()
+    for i, rec in enumerate(records, 1):
+        if time.monotonic() - last > 1:
+            steps("link", done=i - 1, total=len(records), linked=linked, review=review)
+            last = time.monotonic()
         raw = " ".join(str(x) for x in (rec.get("producer"), rec["name"], rec.get("vintage"), "-", comp[0], year,
                                          rec.get("medal"), f"{rec['points']:g} pts" if rec.get("points") else None)
                        if x)
@@ -531,6 +588,7 @@ def _import(con, filename, data, competition, year, today) -> int:
             (comp_id, year, rec.get("producer"), rec["name"], rec.get("vintage"), rec.get("colour"),
              rec.get("country"), rec.get("medal"), rec.get("points"), source_url, raw, today_s))
         if not cur.rowcount:
+            skipped += 1  # the same award listed twice in this file
             continue
         stored += 1
         how_linked = _link(con, cur.lastrowid, rec, matcher, keys)
@@ -538,9 +596,14 @@ def _import(con, filename, data, competition, year, today) -> int:
         review += how_linked == "review"
     con.execute("UPDATE award_upload SET awards=?, linked=?, to_review=? WHERE id=?",
                 (stored, linked, review, upload_id))
+    steps("link", done=len(records), total=len(records), linked=linked, review=review)
     _keep_file(upload_id, filename, data)
     con.commit()
-    return upload_id
+    log = {"records": len(records), "stored": stored, "skipped": skipped, "linked": linked, "review": review,
+           "not_linked": stored - linked - review, "shop_wines": len(keys),
+           "competition_from": "you" if competition else ("the file" if found_comp else "nowhere: unknown"),
+           "year_from": "you" if given_year else ("the file" if found_year else None)}
+    return upload_id, log
 
 
 def _link(con, award_id: int, rec: dict, matcher, keys: dict, new_only: int = 0) -> str | None:
@@ -632,6 +695,10 @@ def upload_report(con, upload_id: int) -> dict:
     if not up:
         return {}
     up = dict(up)
+    try:
+        up["log"] = json.loads(up.get("log") or "{}")
+    except ValueError:
+        up["log"] = {}
     like = f"upload:{upload_id}:%"
     sample = [dict(r) for r in con.execute(
         "SELECT producer_raw, name_raw, vintage, medal, points, colour, country FROM award "
@@ -669,6 +736,28 @@ def upload_report(con, upload_id: int) -> dict:
     counts = Counter(r["check"] for r in matched)
     up["kept"] = stored_file(upload_id, up["filename"]).exists()
     return {"upload": up, "sample": sample, "matched": matched, "missing": missing, "counts": dict(counts)}
+
+
+REPORT_COLUMNS = ["producer", "wine in the file", "vintage", "colour", "country", "medal", "points", "status",
+                  "wine in your shops", "match %", "on sale now", "shop says", "check", "wijnkoop page"]
+
+
+def report_rows(con, upload_id: int) -> list[list]:
+    """Every award of one upload with what happened to it: the detailed report as a spreadsheet."""
+    report = upload_report(con, upload_id)
+    by_award = {m["award_id"]: m for m in report.get("matched", [])}
+    out = []
+    for a in con.execute(
+            "SELECT id, producer_raw, name_raw, vintage, colour, country, medal, points FROM award "
+            "WHERE source='upload' AND source_url LIKE ? ORDER BY id", (f"upload:{upload_id}:%",)):
+        m = by_award.get(a["id"])
+        status = "not in your shops" if not m else ("linked" if m["confirmed"] else "probable match")
+        out.append([a["producer_raw"] or "", a["name_raw"], a["vintage"] or "", a["colour"] or "", a["country"] or "",
+                    a["medal"] or "", f"{a['points']:g}" if a["points"] else "", status,
+                    m["wine"] if m else "", round(m["match_score"] * 100) if m else "",
+                    ("yes" if m["on_sale"] else "no") if m else "", (m["shop_says"] or "") if m else "",
+                    m["check"] if m else "", f"/wine/{m['wine_id']}" if m else ""])
+    return out
 
 
 def _same(official: str, shop: str) -> bool:

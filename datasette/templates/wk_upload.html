@@ -25,6 +25,7 @@ The official result counts instead of a shop's claim. Results are kept: every sh
   </div>
   <button class="primary" type="submit" id="go">Read file</button>
   <p id="status" class="small muted" style="margin:10px 0 0" role="status"></p>
+  <ol id="steps" class="small" style="margin:8px 0 0;padding-left:20px" hidden></ol>
 </form>
 
 <h2>Earlier uploads</h2>
@@ -50,20 +51,51 @@ document.getElementById("upload").addEventListener("submit", async (ev) => {
   const go = document.getElementById("go");
   if (!file) return;
   if (file.size > 40 * 1024 * 1024) { status.textContent = "This file is larger than 40 MB."; return; }
+  const job = (Math.random().toString(36).slice(2) + Date.now().toString(36)).replace(/[^a-z0-9]/g, "").slice(0, 30);
   const q = new URLSearchParams({filename: file.name, competition: document.getElementById("competition").value,
-                                 year: document.getElementById("year").value});
+                                 year: document.getElementById("year").value, job: job});
   go.disabled = true;
-  status.textContent = "Reading " + file.name + " and linking wines. A large file, or a shop run that is saving, can make this take a few minutes…";
+  const steps = document.getElementById("steps");
+  status.textContent = "Sending " + file.name + "…";
+  // Ask every 1.5 seconds what the upload is doing, and show its steps
+  const watch = setInterval(async () => {
+    try {
+      const p = await (await fetch("/upload/progress?job=" + job, {credentials: "same-origin"})).json();
+      if (!p.step) return;
+      status.textContent = p.waiting
+        ? "Waiting for the database: a shop run is saving its results. This starts by itself when it is done (" + p.elapsed + " so far)."
+        : "Working on " + file.name + " for " + p.elapsed + ". You can leave this page open; it moves on to the report by itself.";
+      steps.hidden = p.waiting;
+      steps.replaceChildren(...p.steps.map(s => {
+        const li = document.createElement("li");
+        li.textContent = (s.state === "done" ? "✓ " : "") + s.label + (s.detail ? " · " + s.detail : "");
+        li.style.fontWeight = s.state === "now" ? "600" : "";
+        li.style.color = s.state === "todo" ? "var(--muted, #888)" : "";
+        return li;
+      }));
+    } catch (e) {}
+  }, 1500);
   try {
     const r = await fetch("/upload?" + q, {method: "POST", body: file, credentials: "same-origin",
                                            headers: {"x-csrftoken": "{{ csrftoken() }}", "content-type": "application/octet-stream"}});
-    const d = await r.json();
+    const text = await r.text();
+    let d = {};
+    try { d = JSON.parse(text); } catch (e) {}
+    if (r.status === 403) {
+      status.textContent = "This page is out of date, for example because WijnKoop was restarted or updated. "
+                         + "Reload the page (F5), choose the file again and press Read file.";
+      go.disabled = false; return;
+    }
     if (r.status === 503) { status.textContent = d.error; go.disabled = false; return; }
-    if (!r.ok) throw new Error(d.error || r.status);
+    if (!r.ok || !d.id) throw new Error(d.error || text.slice(0, 200) || r.status);
+    status.textContent = "Done: " + d.awards + " awards. Opening the report…";
     location.href = "/upload/" + d.id;
   } catch (e) {
     status.textContent = "The file could not be read: " + e.message;
     go.disabled = false;
+  } finally {
+    clearInterval(watch);
+    if (!go.disabled) steps.hidden = true;
   }
 });
 </script>

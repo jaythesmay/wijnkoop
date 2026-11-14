@@ -4,11 +4,25 @@
 <h1>{{ upload.filename }}</h1>
 <p class="lead">{{ upload.competition }}{% if upload.year %} {{ upload.year }}{% else %} (year unknown){% endif %} · {{ upload.kind }} · loaded {{ upload.uploaded_on }}{% if upload.kept %} · <a href="/upload/{{ upload.id }}/file">download the file</a>{% endif %}</p>
 
+{% set log = upload.log or {} %}
 <div class="panel" style="margin-bottom:18px">
   <p style="margin-top:0"><b>How the file was read.</b> {{ upload.how }}</p>
-  <p style="margin-bottom:0">{{ upload.rows_read }} lines read, <b>{{ upload.awards }}</b> awards found,
-  <b>{{ upload.linked }}</b> linked to a wine in your shops{% if upload.to_review %}, {{ upload.to_review }} more that probably match{% endif %}.
-  The awards are kept: after every shop run they are checked again against the wines found since.</p>
+  <table class="list" style="margin-bottom:10px">
+  <tr><td>Lines in the file</td><td class="num">{{ "{:,}".format(upload.rows_read or 0) }}</td></tr>
+  {% if log.records is defined %}<tr><td>Awards found in those lines</td><td class="num">{{ "{:,}".format(log.records) }}</td></tr>{% endif %}
+  {% if log.skipped %}<tr><td>Listed more than once in the file (stored once)</td><td class="num">{{ "{:,}".format(log.skipped) }}</td></tr>{% endif %}
+  <tr><td>New awards stored</td><td class="num"><b>{{ "{:,}".format(upload.awards or 0) }}</b></td></tr>
+  <tr><td>Linked to a wine in your shops</td><td class="num"><b>{{ "{:,}".format(upload.linked or 0) }}</b></td></tr>
+  <tr><td>Probable match, counted after a check</td><td class="num">{{ "{:,}".format(upload.to_review or 0) }}</td></tr>
+  {% if log.not_linked is defined %}<tr><td>Not (yet) in your shops</td><td class="num">{{ "{:,}".format(log.not_linked) }}</td></tr>{% endif %}
+  {% if log.shop_wines %}<tr><td>Shop wines compared with</td><td class="num">{{ "{:,}".format(log.shop_wines) }}</td></tr>{% endif %}
+  </table>
+  {% if log.competition_from %}<p class="small muted" style="margin:0 0 6px">Competition: {{ upload.competition }}, chosen by {{ log.competition_from }}.
+  Year: {% if upload.year %}{{ upload.year }}, from {{ log.year_from }}{% else %}not found{% endif %}.</p>{% endif %}
+  {% if log.steps %}<p class="small muted" style="margin:0 0 6px">Time taken: {% for s in log.steps %}{{ s.step|lower }} {% if s.seconds >= 60 %}{{ (s.seconds // 60)|int }} min {{ (s.seconds % 60)|round|int }} s{% else %}{{ s.seconds }} s{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}.</p>{% endif %}
+  {% if log.scores_later %}<p class="small" style="margin:0 0 6px">A shop run was saving, so the scores are recalculated when it finishes.</p>{% endif %}
+  <p style="margin-bottom:0"><a class="btn" href="/upload/{{ upload.id }}/report.csv">Download the full report (every award, for Excel)</a></p>
+  <p class="small muted" style="margin-bottom:0">The awards are kept: after every shop run they are checked again against the wines found since.</p>
 </div>
 
 {% if sample %}

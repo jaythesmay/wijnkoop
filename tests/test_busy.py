@@ -76,3 +76,31 @@ def test_busy_upload_says_so(tmp_path, monkeypatch):
 
     r = asyncio.run(run())
     assert r.status_code == 503 and "busy saving a shop run" in r.json()["error"]
+
+
+def test_an_open_upload_page_still_works_after_a_restart(tmp_path):
+    """The form token is signed with Datasette's secret. With a new secret at every start, a page
+    opened before an update answered "Unknown content-type" (not JSON); start.sh now keeps one secret."""
+    from datasette.app import Datasette
+
+    path = tmp_path / "wijnkoop.db"
+    db.connect(path).close()
+
+    def ds(secret):
+        return Datasette([str(path)], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                         template_dir=str(ROOT / "datasette" / "templates"), secret=secret)
+
+    async def post_after_restart(before, after):
+        page = await before.client.get("/upload")
+        token = re.search(r'"x-csrftoken": "([^"]+)"', page.text).group(1)
+        return await after.client.post("/upload?filename=mundus.txt&competition=Mundus+Vini&year=2025",
+                                       content=RESULTS, headers={"x-csrftoken": token,
+                                                                 "content-type": "application/octet-stream"},
+                                       cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")})
+
+    r = asyncio.run(post_after_restart(ds("old"), ds("new")))
+    assert r.status_code == 403 and "Unknown content-type" in r.text
+    r = asyncio.run(post_after_restart(ds("kept"), ds("kept")))
+    assert r.status_code == 200 and r.json()["awards"] == 1
+    assert 'r.status === 403' in (ROOT / "datasette" / "templates" / "wk_upload.html").read_text()
+    assert "DATASETTE_SECRET" in (ROOT / "start.sh").read_text()
