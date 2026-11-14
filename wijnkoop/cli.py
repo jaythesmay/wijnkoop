@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 
-from . import config, db, jobs, scores
+from . import config, db, jobs, scores, vivino
 from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_shop, fetch_page, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
@@ -145,6 +145,10 @@ def cmd_scheduler(args):
                 continue
             if awards_due(con, now):
                 run_award_import(con)
+                continue
+            if vivino.weekly_due(con, now):
+                vivino.run_weekly(con)
+                scores.recompute(con)
                 continue
         except Exception:
             log.exception("Scheduled job failed, trying again in 1 hour")
