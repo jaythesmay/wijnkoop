@@ -27,7 +27,7 @@ from collections import Counter
 
 from rapidfuzz import fuzz, process
 
-from ..normalize import cuvee_key, norm, strip_accents
+from ..normalize import split_estate, cuvee_key, norm, strip_accents
 from ..reference import MEDALS, OTHER_COMPETITION, POINTS20_RE, competition_id, find_competition
 
 MAX_BYTES = 40 * 1024 * 1024
@@ -585,7 +585,7 @@ def _import(con, filename, data, competition, year, today, steps) -> tuple[int, 
     source_url = f"upload:{upload_id}:{filename}"
     steps("link", done=0, total=len(records), linked=0, review=0)
     matcher, keys = Matcher(con), _match_index(con)
-    stored = linked = review = skipped = 0
+    stored = linked = review = skipped = known = answered = 0
     last = time.monotonic()
     for i, rec in enumerate(records, 1):
         if time.monotonic() - last > 1:
@@ -605,15 +605,22 @@ def _import(con, filename, data, competition, year, today, steps) -> tuple[int, 
             continue
         stored += 1
         how_linked = _link(con, cur.lastrowid, rec, matcher, keys)
-        linked += how_linked == "auto"
-        review += how_linked == "review"
+        linked += how_linked in ("auto", "answered") and con.execute(
+            "SELECT confirmed FROM award_match WHERE award_id=?", (cur.lastrowid,)).fetchone()[0] == 1
+        review += how_linked in ("review", "known")
+        known += how_linked == "known"
+        answered += how_linked == "answered"
     con.execute("UPDATE award_upload SET awards=?, linked=?, to_review=? WHERE id=?",
                 (stored, linked, review, upload_id))
     steps("link", done=len(records), total=len(records), linked=linked, review=review)
     _keep_file(upload_id, filename, data)
     con.commit()
     log = {"records": len(records), "stored": stored, "skipped": skipped, "linked": linked, "review": review,
-           "not_linked": stored - linked - review, "shop_wines": len(keys),
+           "review_known": known, "answered_before": answered,
+           "not_linked": con.execute("""SELECT COUNT(*) FROM award a WHERE a.source_url=? AND NOT EXISTS
+                                          (SELECT 1 FROM award_match m WHERE m.award_id = a.id)""",
+                                     (source_url,)).fetchone()[0],
+           "shop_wines": len(keys),
            "competition_from": "you" if competition else ("the file" if found_comp else "nowhere: unknown"),
            "year_from": "you" if given_year else ("the file" if found_year else None)}
     return upload_id, log
@@ -632,10 +639,38 @@ def _link(con, award_id: int, rec: dict, matcher, keys: dict, new_only: int = 0)
     if not cid or score < REVIEW:
         return None
     wine_id = matcher.wine_for(cid, rec.get("vintage"))
-    confirmed = 1 if score >= AUTO else None
+    confirmed, how = (1, "auto") if score >= AUTO else (None, "review")
+    if confirmed is None:
+        # The same award (another file, another year) for the same wine: your earlier Yes or No
+        # holds, and one still waiting for you is not a second task.
+        earlier = [m["confirmed"] for m in _same_award_links(con, award_id, wine_id,
+                                                              award_key(rec.get("producer"), rec["name"]))]
+        if 1 in earlier or 0 in earlier:
+            confirmed = 1 if 1 in earlier else 0
+            how = "answered"
+        elif earlier:
+            how = "known"
     con.execute("INSERT OR IGNORE INTO award_match (award_id, wine_id, match_score, confirmed) "
                 "VALUES (?,?,?,?)", (award_id, wine_id, round(score / 100, 3), confirmed))
-    return "auto" if confirmed else "review"
+    return how
+
+
+def award_key(producer, name) -> str:
+    """The same wine in two results files: producer and name, normalised, in any order."""
+    full = name or ""
+    if producer and norm(producer) not in norm(full):
+        full = f"{producer} {full}"
+    return " ".join(sorted(cuvee_key(full).split()))
+
+
+def _same_award_links(con, award_id: int, wine_id: int, key: str) -> list:
+    """Links of other uploaded awards with the same wine name to this wine (any vintage of it)."""
+    return [r for r in con.execute(
+        """SELECT m.award_id, m.wine_id, m.confirmed, a.producer_raw, a.name_raw FROM award_match m
+           JOIN award a ON a.id = m.award_id
+           WHERE a.source = 'upload' AND m.award_id != ?
+             AND m.wine_id IN (SELECT id FROM wine WHERE cuvee_id = (SELECT cuvee_id FROM wine WHERE id = ?))""",
+        (award_id, wine_id)) if award_key(r["producer_raw"], r["name_raw"]) == key]
 
 
 # ---------------------------------------------------------------- kept files, later links
@@ -686,9 +721,12 @@ def relink_uploads(con, everything: bool = False, progress=None) -> int:
             rec = {"name": a["name_raw"], "producer": a["producer_raw"], "colour": a["colour"],
                    "vintage": a["vintage"]}
             if _link(con, a["id"], rec, matcher, keys, new_only=since):
-                found += 1
                 touched.add(a["source_url"].split(":")[1])
                 m = con.execute("SELECT wine_id, confirmed FROM award_match WHERE award_id=?", (a["id"],)).fetchone()
+                if m["confirmed"] == 0:  # you said No to this award for this wine in another file
+                    con.commit()
+                    continue
+                found += 1
                 con.execute("""INSERT INTO event (happened_on, kind, wine_id, new_value, detail)
                                VALUES (?, 'award_found', ?, ?, ?)""",
                             (today, m["wine_id"], "linked" if m["confirmed"] else "probable",
@@ -727,16 +765,30 @@ def upload_report(con, upload_id: int) -> dict:
         "SELECT producer_raw, name_raw, vintage, medal, points, colour, country FROM award "
         "WHERE source='upload' AND source_url LIKE ? ORDER BY id LIMIT 15", (like,))]
     matched = [dict(r) for r in con.execute(
-        """SELECT a.id AS award_id, a.name_raw, a.vintage AS award_vintage, a.medal, a.points, m.wine_id,
+        """SELECT a.id AS award_id, a.name_raw, a.producer_raw, a.vintage AS award_vintage, a.medal, a.points, m.wine_id,
                   w.name || COALESCE(' ' || w.vintage, '') AS wine, m.match_score, m.confirmed,
+                  w.producer AS wine_producer, w.wine_name, w.name AS wine_full, w.vintage AS wine_vintage,
                   (SELECT GROUP_CONCAT(DISTINCT COALESCE(sa.medal, '') || CASE WHEN sa.points IS NULL THEN '' ELSE ' ' || printf('%g', sa.points) END)
                      FROM award_match sm JOIN award sa ON sa.id = sm.award_id
                     WHERE sm.wine_id = m.wine_id AND sa.source = 'shop page' AND sa.competition_id = a.competition_id
                       AND (sa.year IS NULL OR a.year IS NULL OR sa.year = a.year)) AS shop_says,
-                  EXISTS (SELECT 1 FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1) AS on_sale
+                  EXISTS (SELECT 1 FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1) AS on_sale,
+                  (SELECT o.price FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1 AND o.gone_since IS NULL
+                     AND o.price IS NOT NULL ORDER BY COALESCE(o.effective_price_per_75cl, o.price_per_75cl, o.price)
+                     LIMIT 1) AS price,
+                  (SELECT o.volume_cl FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1 AND o.gone_since IS NULL
+                     AND o.price IS NOT NULL ORDER BY COALESCE(o.effective_price_per_75cl, o.price_per_75cl, o.price)
+                     LIMIT 1) AS volume_cl,
+                  (SELECT s.name FROM offer o JOIN shop s ON s.id = o.shop_id WHERE o.wine_id = m.wine_id
+                     AND o.is_current = 1 AND o.gone_since IS NULL AND o.price IS NOT NULL
+                     ORDER BY COALESCE(o.effective_price_per_75cl, o.price_per_75cl, o.price) LIMIT 1) AS price_shop,
+                  (SELECT COUNT(DISTINCT o.shop_id) FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1
+                     AND o.gone_since IS NULL) AS shops
            FROM award a JOIN award_match m ON m.award_id = a.id JOIN wine w ON w.id = m.wine_id
            WHERE a.source = 'upload' AND a.source_url LIKE ?
            ORDER BY m.confirmed IS NULL DESC, on_sale DESC, a.points DESC, a.medal""", (like,))]
+    for r in matched:
+        _apart(r)
     for r in matched:
         if r["confirmed"] == 0:
             r["check"] = "rejected"
@@ -807,20 +859,91 @@ def uploads(con) -> list[dict]:
     return rows
 
 
-def judge_match(con, upload_id: int, award_id: int, wine_id: int, same: bool) -> bool:
-    """Loes says whether an award of this upload is for this wine: yes counts it (confirmed 1),
-    no keeps the link visible as 'not counted' (confirmed 0), so it is never linked again."""
-    hit = con.execute(
-        """UPDATE award_match SET confirmed=? WHERE award_id=? AND wine_id=?
-           AND award_id IN (SELECT id FROM award WHERE source='upload' AND source_url LIKE ?)""",
-        (1 if same else 0, award_id, wine_id, f"upload:{upload_id}:%")).rowcount
-    if hit:
-        _count_links(con, upload_id)
-        con.commit()
+def judge_match(con, upload_id: int | None, award_id: int, wine_id: int, same: bool, rescore: bool = True) -> bool:
+    """Loes says whether an award is for this wine: yes counts it (confirmed 1), no keeps the link
+    visible as 'not counted' (confirmed 0), so it is never linked again. The same award in other
+    uploads that still waits for an answer (same wine name, same wine) gets the same answer.
+    upload_id: the upload the award must belong to (None: any upload, from the to-check list).
+    rescore=False: the caller works the scores out later (the page does it in the background)."""
+    a = con.execute("SELECT producer_raw, name_raw, source_url FROM award WHERE id=? AND source='upload'"
+                    + ("" if upload_id is None else " AND source_url LIKE ?"),
+                    (award_id,) if upload_id is None else (award_id, f"upload:{upload_id}:%")).fetchone()
+    if not a:
+        return False
+    hit = con.execute("UPDATE award_match SET confirmed=? WHERE award_id=? AND wine_id=?",
+                      (1 if same else 0, award_id, wine_id)).rowcount
+    if not hit:
+        return False
+    touched = {a["source_url"].split(":")[1]}
+    for m in _same_award_links(con, award_id, wine_id, award_key(a["producer_raw"], a["name_raw"])):
+        if m["confirmed"] is None:
+            con.execute("UPDATE award_match SET confirmed=? WHERE award_id=? AND wine_id=?",
+                        (1 if same else 0, m["award_id"], m["wine_id"]))
+            src = con.execute("SELECT source_url FROM award WHERE id=?", (m["award_id"],)).fetchone()[0]
+            touched.add(src.split(":")[1])
+    for uid in touched:
+        if uid.isdigit():
+            _count_links(con, int(uid))
+    con.commit()
+    if rescore:
         from ..scores import recompute
 
         recompute(con)
-    return bool(hit)
+    return True
+
+
+def to_check(con) -> list[dict]:
+    """Every probable link of an uploaded award that waits for your Yes or No, the same award in
+    several files once. Wines on sale first, the most alike first."""
+    rows = con.execute(
+        """SELECT m.award_id, m.wine_id, m.match_score, a.producer_raw, a.name_raw, a.vintage AS award_vintage,
+                  a.medal, a.points, a.year, a.source_url, c.short, w.name || COALESCE(' ' || w.vintage, '') AS wine,
+                  w.cuvee_id, w.producer AS wine_producer, w.wine_name, w.name AS wine_full, w.vintage AS wine_vintage,
+                  (SELECT o.price FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1 AND o.gone_since IS NULL
+                     AND o.price IS NOT NULL ORDER BY COALESCE(o.effective_price_per_75cl, o.price_per_75cl, o.price)
+                     LIMIT 1) AS price,
+                  (SELECT s.name FROM offer o JOIN shop s ON s.id = o.shop_id WHERE o.wine_id = m.wine_id
+                     AND o.is_current = 1 AND o.gone_since IS NULL AND o.price IS NOT NULL
+                     ORDER BY COALESCE(o.effective_price_per_75cl, o.price_per_75cl, o.price) LIMIT 1) AS price_shop,
+                  (SELECT COUNT(DISTINCT o.shop_id) FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1
+                     AND o.gone_since IS NULL) AS shops
+           FROM award_match m JOIN award a ON a.id = m.award_id JOIN wine w ON w.id = m.wine_id
+           JOIN competition c ON c.id = a.competition_id
+           WHERE m.confirmed IS NULL AND a.source = 'upload'
+           ORDER BY price IS NULL, m.match_score DESC, a.id""").fetchall()
+    groups = {}
+    for r in rows:
+        key = (r["cuvee_id"], award_key(r["producer_raw"], r["name_raw"]))
+        g = groups.get(key)
+        result = f"{r['short']} {r['year'] or ''} {r['medal'] or ''}{' %g pts' % r['points'] if r['points'] else ''}"
+        if g is None:
+            g = groups[key] = dict(r)
+            g["results"] = []
+            g["uploads"] = set()
+        result = " ".join(result.split())
+        if result not in g["results"]:
+            g["results"].append(result)
+        g["uploads"].add(r["source_url"].split(":")[1])
+    for g in groups.values():
+        g["files"] = len(g.pop("uploads"))
+        _apart(g)
+    return list(groups.values())
+
+
+def file_parts(producer_raw, name_raw, shop_producer=None) -> tuple[str | None, str]:
+    """Estate and wine of an award in a results file. Files without a producer column often put
+    the estate at the start of the name: taken off when it is the shop wine's producer."""
+    if producer_raw:
+        return producer_raw, split_estate(name_raw, producer_raw)[1]
+    estate, wine = split_estate(name_raw, shop_producer)
+    return (estate, wine) if estate and wine != (name_raw or "").strip() else (None, name_raw or "")
+
+
+def _apart(r: dict):
+    """Adds file_estate, file_wine, shop_estate and shop_wine to a row of the pages."""
+    r["file_estate"], r["file_wine"] = file_parts(r.get("producer_raw"), r.get("name_raw"), r.get("wine_producer"))
+    r["shop_estate"] = r.get("wine_producer")
+    r["shop_wine"] = r.get("wine_name") or split_estate(r.get("wine_full"), r.get("wine_producer"))[1]
 
 
 def delete_upload(con, upload_id: int) -> int:

@@ -147,7 +147,7 @@ def test_order_and_watch(con):
     ui.set_order(con, olarra_offer, 6)                       # 6 halen 5 betalen: 60 for 72
     shop = ui.order(con)["shops"][0]
     assert shop["goods"] == 80.0 and shop["delivery"] == 0 and shop["saved"] == 12.0
-    assert ui.nav(con) == {"order_bottles": 8, "watched": 1}
+    assert ui.nav(con) == {"order_bottles": 8, "watched": 1, "to_check": 0}
     ui.set_order(con, muga_offer, 0)
     ui.clear_order(con)
     assert ui.order(con)["shops"] == []
