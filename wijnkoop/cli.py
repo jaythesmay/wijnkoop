@@ -246,7 +246,7 @@ def cmd_vivino_setup(args):
     if old.exists():
         old.unlink()  # the Brave key is not used any more
     print(f"Saved in {vivino.SETTINGS}.")
-    print("A test with the 3 best-scored wines (3 of your free searches):")
+    print("A test with the first 3 wines of the weekly look-ups (3 of your free searches):")
     args.count = 3
     cmd_vivino_test(args)
 
@@ -272,7 +272,7 @@ def cmd_vivino_test(args):
         print("No Tavily key yet. Run: python -m wijnkoop vivino-setup")
         return
     con = db.connect()
-    ids = vivino.wines_to_test(con, args.count)
+    ids = vivino.wines_to_look_up(con, args.count)  # the same order as the weekly look-ups
     found = 0
     for wine_id in ids:
         try:
@@ -289,6 +289,8 @@ def cmd_vivino_test(args):
             print(f"  {r['wine']}: no rating{price}  <- {r['vivino_title']}")
         else:
             print(f"  {r['wine']}: no rating ({r['how']}, best match {r['match_score']:.0f})")
+            if r.get("snippet"):
+                print(f"      the search brought back {r['snippet']}")
         time.sleep(1.1)
     print(f"{found} of {len(ids)} wines got a Vivino rating. "
           f"Searches this month: {vivino.searches_this_month(con)} of {vivino.MONTHLY_LIMIT}.")
@@ -391,7 +393,7 @@ def main(argv=None):
     p.set_defaults(func=cmd_vivino_setup)
     p = sub.add_parser("vivino-run", help="look up this week's Vivino ratings now")
     p.set_defaults(func=cmd_vivino_run)
-    p = sub.add_parser("vivino-test", help="look up Vivino ratings of the best-scored wines (test)")
+    p = sub.add_parser("vivino-test", help="look up Vivino ratings of the first wines of the weekly look-ups now, and show what the search found")
     p.add_argument("--count", type=int, default=10)
     p.set_defaults(func=cmd_vivino_test)
     sub.add_parser("mail", help="send the weekly overview e-mail now").set_defaults(func=cmd_mail)

@@ -62,7 +62,7 @@ def test_look_up_stores_rating_and_counts_searches(tmp_path, monkeypatch):
     assert row["rating"] == 4.3 and row["vivino_title"] == "Catena Zapata Malbec Argentino"
     url, body, headers = http.calls[0]
     assert url == vivino.ENDPOINT == "https://api.tavily.com/search"
-    assert body["query"] == "Catena Zapata Malbec Argentino vivino" and body["include_domains"] == ["vivino.com"]
+    assert body["query"] == "Catena Zapata Malbec Argentino vivino rating" and body["include_domains"] == ["vivino.com"]
     assert body["search_depth"] == "basic" and not body["include_raw_content"]  # 1 credit, never the page itself
     assert headers["Authorization"] == "Bearer secret"
     assert vivino.searches_this_month(con, TODAY) == 1
@@ -153,7 +153,7 @@ def test_searches_leave_out_vintage_and_bottle_size():
     assert search_name("Bollinger Special Cuvée Magnum 1,5 L") == "Bollinger Special Cuvée"
     assert search_name("Chablis Premier Cru halve fles") == "Chablis Premier Cru"
     assert search_link("Muga Reserva 2019", 2019) == "https://www.vivino.com/search/wines?q=Muga+Reserva"
-    assert query_for("Muga Reserva", 2019) == "Muga Reserva vivino"
+    assert query_for("Muga Reserva", 2019) == "Muga Reserva vivino rating"
 
 
 def _shop(con, i, title, price=12.0):
@@ -330,3 +330,106 @@ def test_update_page_shows_vivino_and_starts_it(tmp_path, monkeypatch):
     assert "1 wine on sale still to look up" in page.text
     assert post.status_code == 302 and post.headers["location"] == "/update?vivino=started#vivino"
     assert started == [1] and "Started: the Vivino ratings are looked up" in after.text
+
+
+def test_ratings_quoted_on_other_pages():
+    m = vivino._mention
+    assert m("Bekroond met goud. Vivino: 4,1 (1.234 beoordelingen). Op voorraad") == (4.1, 1234)
+    assert m("Deze wijn scoort 4.0 op Vivino!") == (4.0, None)
+    assert m("Rated 3,9/5 on Vivino by our customers") == (3.9, None)
+    assert m("Vivino-style bag-in-box 2,5 liter") == (None, None)
+    assert m("vivino price € 4.99") == (None, None)
+    assert m("A great wine of 13.5% from Puglia") == (None, None)
+    result = tavily([
+        {"title": "Search results - Vivino", "url": "https://www.vivino.com/search/wines?q=x", "content": "4.5 stars"},
+        {"title": "Lupo Meraviglia Osso Tre di Tre 2024 - Vinoshop", "url": "https://www.vinoshop.nl/lupo-osso",
+         "content": "Primitivo uit Puglia. Vivino 3,9 (812 beoordelingen). €8,99"},
+        {"title": "Lupo Meraviglia Osso Tre di Tre | Vivino", "url": "https://www.vivino.com/NL/nl/wines/170012345",
+         "content": "Lupo Meraviglia Osso Tre di Tre. Puglia, Italië."},
+        {"title": "Some blog", "url": "https://blog.example/x", "content": "We love Puglia wines."},
+    ])
+    c = vivino.candidates(result)
+    assert [x["how"] for x in c] == ["quoted on vinoshop.nl", None]  # the search page and the blog left out
+    assert c[0]["rating"] == 3.9 and c[0]["ratings_count"] == 812 and c[0]["title"] == "Lupo Meraviglia Osso Tre di Tre 2024"
+    assert c[1]["url"] == "https://www.vivino.com/NL/nl/wines/170012345"  # a vintage page counts as a wine page
+    # the Vivino page has no rating in its text: the page quoting the rating wins
+    match, score = vivino.best_match("Lupo Meraviglia Puglia IGT Osso Tre di Tre", c)
+    assert match["rating"] == 3.9 and score >= 80
+    assert vivino.summary(result).startswith("4 results: Search results - Vivino (www.vivino.com)")
+    assert vivino.summary(tavily([])) == "the search found nothing"
+
+
+def test_look_up_says_why_there_is_no_rating(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    wine_id = _shop(con, 1, "Catena Zapata Malbec Argentino", 29.99)
+    other_pages = tavily([{"title": "Malbec guide", "url": "https://blog.example/malbec", "content": "Mendoza"}])
+    row = vivino.look_up(con, "secret", wine_id, client=FakeHttp(other_pages), today=TODAY)
+    assert row["how"] == "no Vivino page" and row["snippet"] == "1 result: Malbec guide (blog.example)"
+    wrong = tavily([{"title": "Chateau Margaux | Vivino", "url": "https://www.vivino.com/x/w/1", "content": "4.4 · 9,000 ratings"}])
+    assert vivino.look_up(con, "secret", wine_id, client=FakeHttp(wrong), today=TODAY)["how"] == "no match"
+    assert vivino.look_up(con, "secret", wine_id, client=FakeHttp(tavily([])), today=TODAY)["how"] == "no result"
+
+
+def test_look_up_order_and_retries(tmp_path):
+    from wijnkoop import scores
+
+    con = db.connect(tmp_path / "t.db")
+    dear = _shop(con, 1, "Tignanello Toscana", 99.0)
+    focus_gold = _shop(con, 2, "Valcozar Tempranillo", 12.0)
+    focus_silver = _shop(con, 3, "Lupo Meraviglia Primitivo", 9.5)
+    focus_none = _shop(con, 4, "Cantina Tollo Montepulciano", 11.0)
+    cheap = _shop(con, 5, "Tavernello Rosso", 4.0)
+    for wine_id, points in ((dear, 97), (focus_gold, 95), (focus_silver, 91), (cheap, 90)):
+        name = con.execute("SELECT name FROM wine WHERE id=?", (wine_id,)).fetchone()[0]
+        a = con.execute("INSERT INTO award (competition_id, year, points, name_raw, source, source_url) "
+                        "VALUES ((SELECT id FROM competition WHERE short='DWWA'), 2025, ?, ?, 'upload', ?)",
+                        (points, name, f"u:{wine_id}")).lastrowid
+        con.execute("INSERT INTO award_match (award_id, wine_id, confirmed) VALUES (?, ?, 1)", (a, wine_id))
+    con.commit()
+    scores.recompute(con, TODAY)
+    order = vivino.wines_to_look_up(con, 10, TODAY)
+    # EUR 9-15 with awards (best first), EUR 9-15 without, then the others with awards, best first
+    assert order == [focus_gold, focus_silver, focus_none, dear, cheap]
+    # nothing found: tried again after a month; a rating: after half a year
+    vivino.look_up(con, "secret", focus_gold, client=FakeHttp(tavily([])), today=TODAY)
+    vivino.look_up(con, "secret", focus_silver, client=FakeHttp(tavily([
+        {"title": "Lupo Meraviglia Primitivo | Vivino", "url": "https://www.vivino.com/x/w/7",
+         "content": "4.0 · 512 ratings"}])), today=TODAY)
+    assert focus_gold not in vivino.wines_to_look_up(con, 10, TODAY)
+    later = TODAY + dt.timedelta(days=31)
+    assert focus_gold in vivino.wines_to_look_up(con, 10, later) and focus_silver not in vivino.wines_to_look_up(con, 10, later)
+    # side by side
+    x = vivino.cross_reference(con)
+    assert [r["wine_id"] for r in x["both"]] == [focus_silver] and x["both"][0]["points"] == 90
+    assert x["why_not"]["the search found nothing"] == 1 and x["misses"][0]["wine_id"] == focus_gold
+
+
+def test_misses_from_the_old_search_are_tried_again(tmp_path):
+    con = db.connect(tmp_path / "t.db")
+    wine_id = _shop(con, 1, "Catena Zapata Malbec Argentino", 12.0)
+    vivino.ensure_tables(con)
+    con.execute("INSERT INTO vivino_rating (wine_id, how, checked_on) VALUES (?, 'no result', ?)", (wine_id, TODAY.isoformat()))
+    con.commit()
+    assert vivino.wines_to_look_up(con, 5, TODAY) == [wine_id]  # the Tavily test from before this change
+    vivino.look_up(con, "secret", wine_id, client=FakeHttp(tavily([])), today=TODAY)
+    assert vivino.wines_to_look_up(con, 5, TODAY) == []  # once only
+
+
+def test_vivino_page(tmp_path):
+    import asyncio
+    from pathlib import Path
+
+    from datasette.app import Datasette
+
+    root = Path(__file__).parent.parent
+    con = db.connect(tmp_path / "wijnkoop.db")
+    wine_id = _shop(con, 1, "Cantina Tollo Montepulciano", 11.0)
+    vivino.look_up(con, "secret", wine_id, client=FakeHttp(tavily([
+        {"title": "Cantina Tollo Montepulciano | Vivino", "url": "https://www.vivino.com/x/w/9",
+         "content": "4.2 · 1,300 ratings"}])), today=TODAY)
+    con.close()
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(root / "datasette" / "plugins"),
+                   template_dir=str(root / "datasette" / "templates"))
+    page = asyncio.run(ds.client.get("/vivino?from=9&to=15"))
+    assert page.status_code == 200 and "The public likes them, no awards yet" in page.text
+    assert "Cantina Tollo Montepulciano" in page.text and "4.2 ★" in page.text

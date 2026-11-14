@@ -103,7 +103,8 @@ A shop that answers “too many requests” (HTTP 429) is paused for a few hours
     {% if vivino.next %}<div class="meta">Next by itself: {{ vivino.next }}, up to {{ vivino.weekly }} wines a week.</div>{% endif %}
     {% endif %}
     <div class="meta">Searches in {{ vivino.month }}: <b>{{ vivino.used }}</b> of {{ vivino.limit }}{% if vivino.used >= vivino.limit %} (all used; more next month){% endif %}.</div>
-    <div class="meta">{{ vivino.rated }} wine{{ 's' if vivino.rated != 1 }} with a Vivino rating ({{ vivino.checked }} looked up). {{ vivino.waiting }} wine{{ 's' if vivino.waiting != 1 }} on sale still to look up, or looked up over half a year ago.</div></td>
+    <div class="meta">{{ vivino.rated }} wine{{ 's' if vivino.rated != 1 }} with a Vivino rating ({{ vivino.checked }} looked up). {{ vivino.waiting }} wine{{ 's' if vivino.waiting != 1 }} on sale still to look up. <a href="/vivino">See them next to the awards, and why some got no rating</a>.</div>
+    <div class="meta">Order: wines on your watchlist, then €{{ '%g'|format(vivino.focus[0]) }}–{{ '%g'|format(vivino.focus[1]) }} wines with awards (best first), then those without awards, then the rest. A wine the search found nothing for is tried again after a month.</div></td>
   <td class="num">
     {% if vivino.has_key and not vivino.running %}
     <form method="post" action="/update#vivino">

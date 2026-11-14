@@ -36,6 +36,11 @@ MONTHLY_LIMIT = int(os.environ.get("WIJNKOOP_VIVINO_MONTHLY_LIMIT", "900"))
 MIN_MATCH = 80
 WEEKLY = int(os.environ.get("WIJNKOOP_VIVINO_WEEKLY", "200"))
 RECHECK_DAYS = 180
+NO_RESULT_DAYS = 30  # a wine the search found nothing for is tried again after a month
+# The price band looked up first: wines of EUR 9-15 a bottle (per 75 cl), Loes's sweet spot
+FOCUS = (float(os.environ.get("WIJNKOOP_VIVINO_FROM", "9")), float(os.environ.get("WIJNKOOP_VIVINO_TO", "15")))
+# Raised when the way of searching changes: look-ups that found nothing are then tried again.
+LOOKUP_VERSION = 2
 MANY = 250          # ratings: "many"
 FULL, LESS, LIGHT = 1.0, 0.6, 0.15
 MIN_RATINGS = 10
@@ -100,11 +105,14 @@ def _count_search(con, today: dt.date | None = None):
 
 
 def search(key: str, query: str, client=None) -> dict:
-    """One basic Tavily search (1 credit) on vivino.com only. Only the result text Tavily gives;
+    """One basic Tavily search (1 credit), vivino.com preferred. Only the result text Tavily gives;
     never the page itself (no raw content)."""
     client = client or httpx.Client(timeout=20)
-    r = client.post(ENDPOINT, json={"query": query, "search_depth": "basic", "max_results": 5,
-                                    "include_domains": ["vivino.com"], "include_raw_content": False},
+    # vivino.com first, but other pages too: shops and reviews often quote the Vivino rating
+    # ("4,1 op Vivino"), and Vivino's own pages are not always in the search index.
+    r = client.post(ENDPOINT, json={"query": query, "search_depth": "basic", "max_results": 8,
+                                    "include_domains": ["vivino.com"], "include_domains_mode": "prefer",
+                                    "include_raw_content": False},
                     headers={"Authorization": f"Bearer {key}", "Accept": "application/json",
                              "User-Agent": config.USER_AGENT})
     r.raise_for_status()
@@ -134,6 +142,31 @@ def _rating_from_text(text: str) -> tuple[float | None, int | None]:
         digits = re.sub(r"[.,]", "", m.group(1))
         count = int(digits) if digits.isdigit() else None
     return rating, count
+
+
+# Another page quoting the Vivino rating: "Vivino: 4,1", "Vivino rating 4.2 (1.234 beoordelingen)",
+# "4.1 op Vivino", "4,0/5 on Vivino"
+NOT_A_RATING = r"(?!\d|\s*(?:%|cl\b|l\b|ltr|liter|€|eur|euro))"
+MENTION = [
+    re.compile(r"vivino[^0-9<>]{0,40}?(?<![\d.,])([1-5][.,]\d)" + NOT_A_RATING, re.I),
+    re.compile(r"(?<![\d.,])([1-5][.,]\d)" + NOT_A_RATING + r"\s*(?:/\s*5\s*)?(?:★\s*|stars?\s*|sterren\s*)?"
+               r"(?:on|op|bij|auf|su|sur)\s+vivino", re.I),
+]
+
+
+def _mention(text: str) -> tuple[float | None, int | None]:
+    """The Vivino rating another page quotes, and the number of ratings when it says so."""
+    for rx in MENTION:
+        m = rx.search(text)
+        if m:
+            rating = float(m.group(1).replace(",", "."))
+            near = SNIPPET_COUNT.search(text[max(0, m.start() - 40):m.end() + 60])
+            count = None
+            if near:
+                digits = re.sub(r"[.,]", "", near.group(1))
+                count = int(digits) if digits.isdigit() else None
+            return rating, count
+    return None, None
 
 
 EURO = r"(\d{1,4}(?:[.,]\d{2})?)"
@@ -181,11 +214,21 @@ def candidates(result: dict) -> list[dict]:
     out = []
     for r in (result.get("results") or []) + ((result.get("web") or {}).get("results") or []):
         url = r.get("url") or ""
-        if "vivino.com" not in url or "/w/" not in url:
-            continue
-        title = re.sub(r"\s*[|-]\s*Vivino.*$", "", r.get("title") or "", flags=re.I).strip()
         text = " ".join([r.get("content") or r.get("description") or ""] + list(r.get("extra_snippets") or []))
         text = re.sub(r"<[^>]+>", "", text)
+        on_vivino = "vivino.com" in url
+        if on_vivino and not re.search(r"/w/\d|/wines/\d", url):
+            continue  # a search or list page, not one wine
+        if not on_vivino:  # another page: only when it quotes the Vivino rating
+            rating, count = _mention(text)
+            if not rating:
+                continue
+            site = re.sub(r"^www\.", "", url.split("/")[2]) if url.count("/") >= 2 else url
+            title = re.sub(r"\s*[|\-–]\s*[^|\-–]*$", "", r.get("title") or "").strip() or (r.get("title") or "")
+            out.append({"title": title, "url": url, "rating": rating, "ratings_count": count,
+                        "how": f"quoted on {site}", "snippet": text[:300], "price": None, "vintage": None})
+            continue
+        title = re.sub(r"\s*[|-]\s*Vivino.*$", "", r.get("title") or "", flags=re.I).strip()
         rating, count, how = None, None, None
         structured = r.get("rating") or (r.get("product") or {}).get("rating") or {}
         if isinstance(structured, dict) and structured.get("ratingValue"):
@@ -205,14 +248,32 @@ def candidates(result: dict) -> list[dict]:
     return out
 
 
+def summary(result: dict) -> str:
+    """What a search brought back, in one line: to see why a wine got no rating."""
+    rows = (result.get("results") or []) + ((result.get("web") or {}).get("results") or [])
+    if not rows:
+        return "the search found nothing"
+    parts = [f"{(r.get('title') or '?')[:60]} ({(r.get('url') or '').split('/')[2] if (r.get('url') or '').count('/') >= 2 else '?'})"
+             for r in rows[:4]]
+    return f"{len(rows)} result{'s' if len(rows) != 1 else ''}: " + "; ".join(parts)
+
+
 def best_match(name: str, cands: list[dict]) -> tuple[dict | None, float]:
-    best, score = None, 0.0
+    """The result that is this wine: the best-matching name; among names that match about as well,
+    one with a rating, and a Vivino page before a page quoting Vivino."""
+    scored = []
     for c in cands:
         title = re.sub(r"\b(19|20)\d{2}\b", "", c["title"])
         s = max(fuzz.token_set_ratio(norm(name), norm(title)), fuzz.token_sort_ratio(norm(name), norm(title)))
-        if s > score:
-            best, score = c, s
-    return (best, score) if score >= MIN_MATCH else (None, score)
+        scored.append((s, c))
+    if not scored:
+        return None, 0.0
+    top = max(s for s, _ in scored)
+    if top < MIN_MATCH:
+        return None, top
+    close = [(s, c) for s, c in scored if s >= max(MIN_MATCH, top - 5)]
+    s, c = max(close, key=lambda x: (x[1]["rating"] is not None, not x[1]["how"] or not x[1]["how"].startswith("quoted"), x[0]))
+    return c, s
 
 
 SIZE_WORDS = re.compile(
@@ -227,9 +288,8 @@ def search_name(name: str) -> str:
 
 
 def query_for(name: str, vintage=None) -> str:
-    # The vintage is left out: a Vivino wine page covers every vintage. Only vivino.com is searched
-    # (include_domains), so the name is the whole query.
-    return f"{search_name(name)} vivino"
+    # The vintage is left out: a Vivino wine page covers every vintage.
+    return f"{search_name(name)} vivino rating"
 
 
 def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = None) -> dict:
@@ -241,11 +301,17 @@ def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = No
     name, vintage = w[0], w[1]
     result = search(key, query_for(name, vintage), client)
     _count_search(con, today)
-    match, score = best_match(name, candidates(result))
+    cands = candidates(result)
+    match, score = best_match(name, cands)
+    seen = summary(result)
     row = {"wine_id": wine_id, "wine": f"{name} {vintage or ''}".strip(), "rating": None, "ratings_count": None,
            "vivino_title": None, "vivino_url": None, "match_score": round(score, 1), "how": "no result",
-           "snippet": None, "checked_on": (today or dt.date.today()).isoformat(), "price": None,
+           "snippet": seen if not match else None, "checked_on": (today or dt.date.today()).isoformat(), "price": None,
            "rating_vintage": None}
+    if not match and cands:
+        row["how"] = "no match"  # Vivino results, but none of them this wine
+    elif not match and seen != "the search found nothing":
+        row["how"] = "no Vivino page"  # results, but no Vivino page and no page quoting Vivino
     if match:
         row.update(rating=match["rating"], ratings_count=match["ratings_count"], vivino_title=match["title"],
                    vivino_url=match["url"], how=match["how"] or "no rating in result", snippet=match["snippet"],
@@ -254,15 +320,6 @@ def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = No
                 tuple(row.values()))
     con.commit()
     return row
-
-
-def wines_to_test(con, count: int) -> list[int]:
-    """The best-scored wines on sale that were not looked up yet."""
-    ensure_tables(con)
-    return [r[0] for r in con.execute(
-        """SELECT b.wine_id FROM best_buys b
-           WHERE b.score IS NOT NULL AND b.wine_id NOT IN (SELECT wine_id FROM vivino_rating)
-           GROUP BY b.wine_id ORDER BY MAX(b.score) DESC LIMIT ?""", (count,))]
 
 
 def points(rating: float | None) -> float | None:
@@ -297,30 +354,89 @@ def counted(con, wine_id: int | None = None) -> list[dict]:
     return out
 
 
+def _reset_after_change(con):
+    """After a change in the way of searching (LOOKUP_VERSION), the wines it found nothing for are
+    tried again: they may well be found now."""
+    row = con.execute("SELECT value FROM setting WHERE key='vivino_lookup_version'").fetchone()
+    if row and str(row[0]).isdigit() and int(row[0]) >= LOOKUP_VERSION:
+        return
+    con.execute("DELETE FROM vivino_rating WHERE rating IS NULL AND price IS NULL")
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('vivino_lookup_version', ?)", (str(LOOKUP_VERSION),))
+    con.commit()
+
+
+def _due_sql(today: dt.date | None):
+    """Wines on sale not looked up yet, or looked up long enough ago: half a year after a rating,
+    a month after a search that found nothing."""
+    today = today or dt.date.today()
+    since = (today - dt.timedelta(days=RECHECK_DAYS)).isoformat()
+    since_none = (today - dt.timedelta(days=NO_RESULT_DAYS)).isoformat()
+    return ("""w.id IN (SELECT wine_id FROM offer WHERE is_current = 1 AND gone_since IS NULL)
+               AND w.id NOT IN (SELECT wine_id FROM vivino_rating
+                                WHERE checked_on >= ? OR (checked_on >= ? AND (rating IS NOT NULL OR price IS NOT NULL)))""",
+            [since_none, since])
+
+
 def wines_to_look_up(con, count: int, today: dt.date | None = None) -> list[int]:
-    """Wines on sale to look up this week, most useful first: on the watchlist or in the order,
-    then without any award (Vivino is the only opinion there), then the best scored. A wine
-    already looked up comes back after RECHECK_DAYS."""
+    """Wines on sale to look up, most useful first:
+    1. on the watchlist or in the order;
+    2. EUR 9-15 a bottle (FOCUS) with awards, best award score first: is the public as fond of them?
+    3. EUR 9-15 without awards: Vivino is the only opinion there, and finds the ones the public likes;
+    4. other wines with awards, best scored first; 5. the rest."""
     ensure_tables(con)
-    since = ((today or dt.date.today()) - dt.timedelta(days=RECHECK_DAYS)).isoformat()
+    _reset_after_change(con)
+    where, args = _due_sql(today)
     return [r[0] for r in con.execute(
-        """SELECT w.id FROM wine w
-           LEFT JOIN wine_score ws ON ws.wine_id = w.id
-           WHERE w.id IN (SELECT wine_id FROM offer WHERE is_current = 1 AND gone_since IS NULL)
-             AND w.id NOT IN (SELECT wine_id FROM vivino_rating WHERE checked_on >= ?)
-           ORDER BY (w.id IN (SELECT wine_id FROM watch)
-                     OR w.id IN (SELECT o.wine_id FROM order_item i JOIN offer o ON o.id = i.offer_id)) DESC,
-                    (COALESCE(ws.n_awards, 0) = 0) DESC, COALESCE(ws.overall, 0) DESC, w.id
-           LIMIT ?""", (since, count))]
+        f"""SELECT w.id,
+                   (SELECT MIN(COALESCE(o.price_per_75cl, o.price)) FROM offer o
+                     WHERE o.wine_id = w.id AND o.is_current = 1 AND o.gone_since IS NULL AND o.price > 0) AS price
+            FROM wine w LEFT JOIN wine_score ws ON ws.wine_id = w.id
+            WHERE {where}
+            ORDER BY (w.id IN (SELECT wine_id FROM watch)
+                      OR w.id IN (SELECT o.wine_id FROM order_item i JOIN offer o ON o.id = i.offer_id)) DESC,
+                     CASE WHEN price BETWEEN ? AND ? THEN (CASE WHEN COALESCE(ws.n_awards, 0) > 0 THEN 0 ELSE 1 END)
+                          WHEN COALESCE(ws.n_awards, 0) > 0 THEN 2 ELSE 3 END,
+                     COALESCE(ws.overall, 0) DESC, price, w.id
+            LIMIT ?""", (*args, *FOCUS, count))]
 
 
 def waiting(con, today: dt.date | None = None) -> int:
-    """How many wines on sale have no Vivino look-up yet, or one older than RECHECK_DAYS."""
+    """How many wines on sale are still to look up (see _due_sql)."""
     ensure_tables(con)
-    since = ((today or dt.date.today()) - dt.timedelta(days=RECHECK_DAYS)).isoformat()
-    return con.execute(
-        """SELECT COUNT(DISTINCT wine_id) FROM offer WHERE is_current = 1 AND gone_since IS NULL
-             AND wine_id NOT IN (SELECT wine_id FROM vivino_rating WHERE checked_on >= ?)""", (since,)).fetchone()[0]
+    where, args = _due_sql(today)
+    return con.execute(f"SELECT COUNT(*) FROM wine w WHERE {where}", args).fetchone()[0]
+
+
+def cross_reference(con, low: float | None = None, high: float | None = None, limit: int = 100) -> dict:
+    """Wines on sale with a Vivino rating, in a price band (default FOCUS), next to their award score:
+    the ones the public likes that have no awards, and the ones both like (or disagree on)."""
+    ensure_tables(con)
+    low, high = low if low is not None else FOCUS[0], high if high is not None else FOCUS[1]
+    rows = [dict(r) for r in con.execute(
+        """SELECT w.id AS wine_id, w.name, w.vintage, w.colour, v.rating, v.ratings_count, v.how, v.vivino_url,
+                  v.vivino_title, ws.overall, COALESCE(ws.n_awards, 0) AS n_awards, ws.best_award,
+                  (SELECT MIN(COALESCE(o.price_per_75cl, o.price)) FROM offer o
+                    WHERE o.wine_id = w.id AND o.is_current = 1 AND o.gone_since IS NULL AND o.price > 0) AS price
+           FROM vivino_rating v JOIN wine w ON w.id = v.wine_id LEFT JOIN wine_score ws ON ws.wine_id = w.id
+           WHERE v.rating IS NOT NULL""")]
+    rows = [r for r in rows if r["price"] and low <= r["price"] <= high]
+    for r in rows:
+        r["points"] = points(r["rating"])
+        r["gap"] = round(r["points"] - r["overall"], 1) if r["overall"] and r["n_awards"] else None
+    no_awards = sorted((r for r in rows if not r["n_awards"]), key=lambda r: (-r["rating"], -(r["ratings_count"] or 0)))
+    both = sorted((r for r in rows if r["n_awards"]), key=lambda r: (-(r["overall"] or 0), -r["rating"]))
+    counts = con.execute("""SELECT COUNT(*), COUNT(rating), SUM(rating IS NULL AND how = 'no result'),
+                                   SUM(rating IS NULL AND how = 'no Vivino page'), SUM(rating IS NULL AND how = 'no match'),
+                                   SUM(rating IS NULL AND how NOT IN ('no result', 'no Vivino page', 'no match'))
+                            FROM vivino_rating""").fetchone()
+    misses = [dict(r) for r in con.execute(
+        """SELECT v.wine_id, v.wine, v.how, v.snippet, v.match_score, v.checked_on FROM vivino_rating v
+           WHERE v.rating IS NULL ORDER BY v.checked_on DESC, v.wine_id DESC LIMIT 15""")]
+    return {"low": low, "high": high, "no_awards": no_awards[:limit], "both": both[:limit],
+            "looked_up": counts[0], "rated": counts[1] or 0,
+            "why_not": {"the search found nothing": counts[2] or 0, "no Vivino page in the results": counts[3] or 0,
+                        "Vivino pages, but not this wine": counts[4] or 0, "a page without a rating": counts[5] or 0},
+            "misses": misses}
 
 
 def running(con) -> dict | None:
@@ -351,7 +467,7 @@ def status(con, now: dt.datetime | None = None) -> dict:
     counts = con.execute("SELECT COUNT(*), COUNT(rating) FROM vivino_rating").fetchone()
     return {"has_key": has_key, "running": now_running, "last": last, "next": nxt, "used": used,
             "limit": MONTHLY_LIMIT, "weekly": WEEKLY, "room": room, "checked": counts[0], "rated": counts[1],
-            "waiting": waiting(con, today), "month": today.strftime("%B")}
+            "waiting": waiting(con, today), "month": today.strftime("%B"), "focus": FOCUS}
 
 
 def start_in_background() -> None:
