@@ -13,7 +13,7 @@
   {% if log.skipped %}<tr><td>Listed more than once in the file (stored once)</td><td class="num">{{ "{:,}".format(log.skipped) }}</td></tr>{% endif %}
   <tr><td>New awards stored</td><td class="num"><b>{{ "{:,}".format(upload.awards or 0) }}</b></td></tr>
   <tr><td>Linked to a wine in your shops</td><td class="num"><b>{{ "{:,}".format(upload.linked or 0) }}</b></td></tr>
-  <tr><td>Probable match, counted after a check</td><td class="num">{{ "{:,}".format(upload.to_review or 0) }}</td></tr>
+  <tr><td>Probable match (counts; you can say yes or no below)</td><td class="num">{{ "{:,}".format(upload.to_review or 0) }}</td></tr>
   {% if log.not_linked is defined %}<tr><td>Not (yet) in your shops</td><td class="num">{{ "{:,}".format(log.not_linked) }}</td></tr>{% endif %}
   {% if log.shop_wines %}<tr><td>Shop wines compared with</td><td class="num">{{ "{:,}".format(log.shop_wines) }}</td></tr>{% endif %}
   </table>
@@ -49,15 +49,21 @@
 {% if counts.different %}<span class="tag stock">{{ counts.different }} different from the shop</span> {% endif %}
 {% if counts['not on the shop page'] %}<span class="tag">{{ counts['not on the shop page'] }} not mentioned by the shop</span>{% endif %}
 </p>
+<p class="small muted">A probable match counts until you say otherwise. If an award is for another wine, press ✗ No: it is then not counted and not linked to that wine again.</p>
 <div class="panel" style="margin-bottom:18px"><table class="list">
-<tr><th>Wine</th><th>Official</th><th>Shop says</th><th>Check</th></tr>
+<tr><th>Wine</th><th>Official</th><th>Shop says</th><th>Check</th><th>Same wine?</th></tr>
 {% for m in matched %}
-<tr>
+<tr id="a{{ m.award_id }}"{% if m.confirmed == 0 %} class="muted"{% endif %}>
   <td><a href="/wine/{{ m.wine_id }}">{{ m.wine }}</a>
     <div class="meta">file: {{ m.name_raw }}{% if m.award_vintage %} {{ m.award_vintage }}{% endif %}{% if not m.confirmed %} · probable match ({{ (m.match_score * 100)|round|int }}%){% endif %}{% if not m.on_sale %} · not on sale now{% endif %}</div></td>
   <td>{{ m.medal or '' }}{% if m.points %} {{ '%g'|format(m.points) }}{% endif %}</td>
   <td>{{ m.shop_says or '' }}</td>
-  <td>{% if m.check == 'confirmed' %}<span class="tag best">✓ confirmed</span>{% elif m.check == 'different' %}<span class="tag stock">different</span>{% else %}<span class="muted small">new</span>{% endif %}</td>
+  <td>{% if m.check == 'confirmed' %}<span class="tag best">✓ confirmed</span>{% elif m.check == 'different' %}<span class="tag stock">different</span>{% elif m.check == 'rejected' %}<span class="small">not this wine, not counted</span>{% else %}<span class="muted small">new</span>{% endif %}</td>
+  <td style="white-space:nowrap"><form method="post" action="/upload/{{ upload.id }}" style="display:inline">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}"><input type="hidden" name="award" value="{{ m.award_id }}"><input type="hidden" name="wine" value="{{ m.wine_id }}">
+    {% if m.confirmed != 1 %}<button type="submit" name="verdict" value="same" title="Yes, this award is for this wine: count it">✓ Yes</button>{% endif %}
+    {% if m.confirmed != 0 %}<button type="submit" name="verdict" value="other" title="No, another wine: don't count it">✗ No</button>{% endif %}
+  </form></td>
 </tr>
 {% endfor %}
 </table></div>

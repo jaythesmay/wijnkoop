@@ -109,11 +109,24 @@ def first_words(name: str | None, n: int = 2) -> set[str]:
     return set([w for w in cuvee_key(name or "").split() if w not in STOP and not w.isdigit()][:n])
 
 
-def same_producer(award_producer: str | None, wine_name: str, wine_producer: str | None) -> bool:
-    """The award's producer names the shop wine's producer (or, when the shop gives no producer,
-    the first words of the wine's name)."""
-    pw = _words(wine_producer)
-    return bool(_words(award_producer) & (pw or first_words(wine_name)))
+def producers_agree(pa: set[str], award_name: str, pw: set[str], wine_name: str) -> bool:
+    """Is the award's producer the shop wine's producer? pa and pw are their producer words
+    (_words), empty when not given.
+
+    One shared word is not enough: "Cape Mentelle" is not "Cape Dream". With both producers given,
+    one must hold all the words of the other ("Herdade do Esporao" and "Esporao" agree). With one
+    of them missing, the other's producer must be named in full in that wine's name."""
+    if pa and pw:
+        return bool(pa & pw) and (pa <= pw or pw <= pa)
+    if pa:
+        return pa <= _words(wine_name)
+    shop = pw or first_words(wine_name)
+    return bool(shop) and shop <= _words(award_name)
+
+
+def same_producer(award_producer: str | None, wine_name: str, wine_producer: str | None,
+                  award_name: str = "") -> bool:
+    return producers_agree(_words(award_producer), award_name, _words(wine_producer), wine_name)
 
 
 def _words(text: str | None) -> set[str]:
@@ -170,7 +183,7 @@ class Matcher:
                 continue
             # The award's producer must name the shop wine's producer (or, when the shop
             # gives no producer, the first words of the wine's name).
-            if not pa & (pw or first_words(name)):
+            if not producers_agree(pa, rec["name"], pw, name):
                 continue
             left = " ".join(sorted(na - pa - pw))
             right = " ".join(sorted(nw - pa - pw))
@@ -212,8 +225,8 @@ def unlink_conflicts(con) -> list[int]:
     for r in rows:
         why = conflict(r["name_raw"], r["award_colour"], r["name"], r["colour"],
                        _words(r["producer_raw"]) | _words(r["producer"]))
-        if not why and r["producer_raw"] and not same_producer(r["producer_raw"], r["name"], r["producer"]):
-            why = f"producer: {r['producer_raw']} award, {r['producer'] or r['name']} wine"
+        if not why and not same_producer(r["producer_raw"], r["name"], r["producer"], r["name_raw"]):
+            why = f"producer: {r['producer_raw'] or r['name_raw']} award, {r['producer'] or r['name']} wine"
         if why:
             log.info("Award %s is not for wine %s (%s): link undone", r["award_id"], r["wine_id"], why)
             con.execute("DELETE FROM award_match WHERE award_id=? AND wine_id=?", (r["award_id"], r["wine_id"]))
