@@ -21,6 +21,7 @@ Made for a phone, in the shop as well as at home:
 | `/wine/<id>` | One wine: score, awards, shops, price history, other vintages, better value nearby |
 | `/week` | What changed in the last 7 days (the same as the Wednesday e-mail) |
 | `/watchlist` | Wines you follow; their changes come first in the e-mail |
+| `/cellar` | Your cellar: what you bought, how many bottles, until when to drink it (drink-soon first) |
 | `/order` | Order list per shop with promotions, delivery costs and what is missing for free delivery |
 | `/how` | How the score, the price-for-quality label and deals are worked out |
 | `/awards` | Every competition and critic, with the wines that won silver or gold |
@@ -91,6 +92,11 @@ and open `http://<nas tailscale name>:8001`.
   `/data/wijnkoop.db`.
 - Works out scores, value and deals once after the shops are read (at most an hour after new prices
   come in while other shops are still being read), not after every shop.
+- Yours, on every wine page: your own rating (1 to 5 stars) and note, a target price, and Add to cellar.
+  When a watched wine's cheapest offer in stock reaches your target, the watch list and the Wednesday e-mail
+  say so, and with `WIJNKOOP_NTFY_URL` set (a free ntfy.sh topic only you know, e.g.
+  `https://ntfy.sh/wijnkoop-k7x2q9`; subscribe to it in the ntfy app) your phone gets a push message.
+- Uploads are worked on beside the app, not on its single write thread, so the buttons stay quick meanwhile.
 - Keeps the price history as changes only (a line when price, promotion or stock changed); older weekly lines
   are folded together once after the update, which makes the database many times smaller.
 - The search box uses a search index (SQLite FTS5 with three-letter pieces), so a typo still finds the wine.

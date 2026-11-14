@@ -18,6 +18,34 @@
 </div>
 <div class="actions" style="margin-bottom:8px">{{ m.watch_button(w.id, watched) }}</div>
 
+<details class="panel" style="margin-bottom:12px"{% if mine.rating or mine.note or in_cellar or target %} open{% endif %}>
+  <summary><b>Yours</b>{% if mine.rating %} · {{ '★' * mine.rating }}{% endif %}{% if in_cellar %} · {{ in_cellar }} in your cellar{% endif %}{% if target %} · target {{ target|money }}{% endif %}</summary>
+  <form method="post" action="/mine" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+    <input type="hidden" name="wine_id" value="{{ w.id }}"><input type="hidden" name="next" value="{{ here }}">
+    <div><label for="rating">My rating</label>
+      <select id="rating" name="rating"><option value="">–</option>{% for n in range(1, 6) %}<option value="{{ n }}"{% if mine.rating == n %} selected{% endif %}>{{ '★' * n }}</option>{% endfor %}</select></div>
+    <div style="flex:1;min-width:180px"><label for="note">Note</label>
+      <input id="note" name="note" value="{{ mine.note or '' }}" placeholder="e.g. lovely with lamb" style="width:100%"></div>
+    <button type="submit">Save</button>
+  </form>
+  <form method="post" action="/watch/target" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+    <input type="hidden" name="wine_id" value="{{ w.id }}"><input type="hidden" name="next" value="{{ here }}">
+    <div><label for="target">Tell me when it costs at most (per bottle at 6)</label>
+      <input id="target" name="target" inputmode="decimal" value="{{ '%.2f'|format(target) if target else '' }}" placeholder="€" style="width:100px"></div>
+    <button type="submit">Set target</button>
+  </form>
+  <form method="post" action="/cellar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+    <input type="hidden" name="wine_id" value="{{ w.id }}"><input type="hidden" name="next" value="{{ here }}">
+    <div><label for="bottles">Bottles bought</label><input id="bottles" name="bottles" inputmode="numeric" value="6" style="width:60px"></div>
+    <div><label for="price">Price per bottle</label><input id="price" name="price" inputmode="decimal" value="{{ '%.2f'|format(offers[0].price_per_bottle_as_sold) if offers and offers[0].price_per_bottle_as_sold else '' }}" style="width:80px"></div>
+    <div><label for="drink_until">Drink until (year)</label><input id="drink_until" name="drink_until" inputmode="numeric" style="width:80px"></div>
+    <button type="submit">Add to cellar</button>
+  </form>
+</details>
+
 <h2>Where to buy</h2>
 {% if offers %}
 <div class="cards">

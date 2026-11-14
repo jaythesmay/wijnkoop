@@ -614,7 +614,7 @@ def schema_stamp() -> str:
 
         here = Path(__file__).parent
         h = hashlib.sha1()
-        for name in ("db.py", "reference.py", "vivino.py", "pace.py", "quality.py", "normalize.py"):
+        for name in ("db.py", "reference.py", "vivino.py", "pace.py", "quality.py", "normalize.py", "personal.py"):
             f = here / name
             if f.exists():
                 h.update(f.read_bytes())
@@ -659,6 +659,9 @@ def migrate(con, path=None):
     from .quality import ensure_tables as ensure_quality
 
     ensure_quality(con)
+    from .personal import ensure_tables as ensure_personal
+
+    ensure_personal(con)
     _add_later_columns(con)
     fill_wine_names(con)
     con.executescript(INDEXES)

@@ -3,6 +3,26 @@
 {% block content %}
 <h1>Watchlist</h1>
 <p class="lead">Wines you are waiting on. Changes to these come first in the Wednesday e-mail and on <a href="/week">This week</a>.</p>
+{% if alerts %}
+<h2>Target prices reached</h2>
+<ul>{% for a in alerts %}<li>{{ a.sent_on }}: <a href="/wine/{{ a.wine_id }}">{{ a.wine }}</a> {{ a.price|money }} at {{ a.shop }} (target {{ a.target|money }}){% if a.url %} · <a href="{{ a.url }}" target="_blank" rel="noopener">to the shop</a>{% endif %}</li>{% endfor %}</ul>
+{% endif %}
+{% if targets %}
+<h2>Target prices</h2>
+<p class="small muted">When the cheapest offer in stock (per bottle at 6) reaches your target you get a message{% if push %} on your phone and{% endif %} in the Wednesday e-mail.{% if not push %} For a push message on your phone, set WIJNKOOP_NTFY_URL (see the README).{% endif %}</p>
+<div class="panel" style="margin-bottom:14px">
+{% for t in targets %}
+<form method="post" action="/watch/target" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="wine_id" value="{{ t.wine_id }}"><input type="hidden" name="next" value="/watchlist">
+  <a href="/wine/{{ t.wine_id }}" style="flex:1;min-width:160px">{{ t.wine }}</a>
+  <span class="small">{% if t.cheapest %}now {{ t.cheapest|money }} at {{ t.shop }}{% else %}not in stock{% endif %}</span>
+  <input name="target" inputmode="decimal" value="{{ '%.2f'|format(t.target_price) if t.target_price else '' }}" placeholder="target €" style="width:90px">
+  <button type="submit">Set</button>
+</form>
+{% endfor %}
+</div>
+{% endif %}
 {% if cards %}{{ m.cards(cards, two=True) }}
 {% else %}<div class="empty">Nothing watched yet. Tap ☆ Watch on any wine to follow its price and awards.</div>{% endif %}
 {% endblock %}
