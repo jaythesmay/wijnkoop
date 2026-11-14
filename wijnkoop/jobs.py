@@ -222,6 +222,21 @@ def running_shops(con) -> dict[str, dict]:
     return out
 
 
+def _why_waiting(con, key: str, running: dict) -> str:
+    """Why a shop in a run is not being read yet: which limit holds it back."""
+    lim = limits(con)
+    names = lambda keys: ", ".join(SHOPS[k].SHOP_NAME for k in keys)  # noqa: E731
+    if needs_browser(key):
+        browsing = [k for k in running if needs_browser(k)]
+        if len(browsing) >= lim["max_browser_runs"]:
+            return (f"waiting: at most {lim['max_browser_runs']} shop{'s' if lim['max_browser_runs'] > 1 else ''} "
+                    f"with the headless browser at once ({names(browsing)} now)")
+    if len(running) >= lim["max_runs"]:
+        return (f"waiting: {len(running)} of at most {lim['max_runs']} shop{'s' if lim['max_runs'] != 1 else ''} "
+                f"at once {'is' if len(running) == 1 else 'are'} being read ({names(running)})")
+    return "starts in a moment"
+
+
 def shop_status(con, now: dt.datetime | None = None) -> dict:
     now = now or dt.datetime.now()
     jobs = live_jobs(con)
@@ -271,10 +286,8 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
             s["advice"] = (f"broke off {resumable['started'][:16].replace('T', ' ')} after {resumable['pages_ok'] or 0} "
                            "pages (a restart or update); carries on by itself within 10 minutes")
         elif s["queued"]:
-            note = next((j["note"] for j in jobs if j["id"] == queued[key]), None)
             s["state"] = "queued"
-            s["advice"] = ("waiting until fewer shops are being read" if note == "waiting for a free place"
-                           else "waiting for the shop before it in the same run")
+            s["advice"] = _why_waiting(con, key, running)
         elif s["broke_off"] and s["broke_off"]["started"] > (finished.isoformat() if finished else ""):
             s["state"] = "useful"
             stopped = (s["broke_off"]["note"] or "").startswith("stopped by you")
@@ -325,6 +338,30 @@ def request_run(con, keys: list[str], force: bool = False) -> dict:
     return {"job_id": job_id, "shops": todo, "busy": busy, "skipped": skipped}
 
 
+def shops_in_live_jobs(con) -> set[str]:
+    return {k for j in live_jobs(con) for k in j["shops"].split(",")}
+
+
+def start_weekly(con, keys: list[str], start=None) -> int:
+    """The scheduler's run of the shops that are due: a job like one from the app, in its own process."""
+    job_id = con.execute("INSERT INTO app_job (shops, requested, source) VALUES (?, ?, 'weekly')",
+                         (",".join(keys), dt.datetime.now().isoformat(timespec="seconds"))).lastrowid
+    con.commit()
+    (start or launch)(job_id)
+    return job_id
+
+
+def failed_lately(con, key: str, hours: float = 1) -> bool:
+    """The shop failed in a run that ended less than an hour ago: the scheduler waits before trying again."""
+    since = (dt.datetime.now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
+    return any(f"{key} failed" in (r[0] or "") for r in con.execute(
+        "SELECT note FROM app_job WHERE finished >= ?", (since,)))
+
+
+def weekly_running(con) -> bool:
+    return any(j.get("source") == "weekly" for j in live_jobs(con))
+
+
 def launch(job_id: int) -> subprocess.Popen:
     """Start the run of an app job as its own process; its log goes to the container's log."""
     proc = subprocess.Popen([sys.executable, "-m", "wijnkoop", "collect", "--job", str(job_id)],
@@ -339,21 +376,56 @@ def stop_job(con, job_id: int) -> bool:
     if not r or not is_alive(r["process"]):
         return False
     pid = int(r["process"].split(":")[0])
+    # The runs of its shops: each in its own process, in the job's process group
+    mine = [r["process"]]
+    for run in con.execute("SELECT process FROM run_log WHERE finished IS NULL AND process IS NOT NULL"):
+        try:
+            if os.getpgid(int(run["process"].split(":")[0])) == pid:
+                mine.append(run["process"])
+        except (ProcessLookupError, PermissionError, ValueError):
+            pass
     try:
-        os.killpg(pid, signal.SIGTERM)  # the run and its headless browser
+        os.killpg(pid, signal.SIGTERM)  # the run, its shops and their headless browser
     except (ProcessLookupError, PermissionError):
         return False
     con.execute("UPDATE app_job SET finished=?, note='stopped' WHERE id=?",
                 (dt.datetime.now().isoformat(timespec="seconds"), job_id))
-    con.execute("UPDATE run_log SET process = NULL, note = 'stopped by you' WHERE finished IS NULL AND process = ?",
-                (r["process"],))
+    con.execute(f"""UPDATE run_log SET process = NULL, note = 'stopped by you'
+                    WHERE finished IS NULL AND process IN ({','.join('?' * len(mine))})""", mine)
     con.commit()
     return True
 
 
-def run_job(con, job_id: int, collect) -> list[str]:
-    """Inside the job's own process: read its shops one after the other. A shop that another
-    process started reading in the meantime is left to that process."""
+class _Done:
+    """A shop read inside this process (tests, or a collect function given): finished at once."""
+
+    def __init__(self, code):
+        self.returncode = code
+
+    def poll(self):
+        return self.returncode
+
+
+def launch_shop(key: str) -> subprocess.Popen:
+    """One shop's run as its own process, in the job's process group (Stop ends it too)."""
+    return subprocess.Popen([sys.executable, "-m", "wijnkoop", "collect", "--one", key], stdin=subprocess.DEVNULL)
+
+
+def _free_for(con, key: str, mine: set[str]) -> bool:
+    """slot_free, also counting this job's shops that were just started and have not noted their run yet."""
+    lim = limits(con)
+    others = (set(running_shops(con)) | mine) - {key}
+    if len(others) >= lim["max_runs"]:
+        return False
+    return not needs_browser(key) or sum(map(needs_browser, others)) < lim["max_browser_runs"]
+
+
+def run_job(con, job_id: int, collect=None, start=None, poll: float = 5) -> list[str]:
+    """Inside the job's own process: read its shops, as many at the same time as the limits allow
+    ("Shops read at once" on the update page; at most max_browser_runs with the headless browser).
+    Each shop is its own process; this one starts them and waits. A shop that another process
+    started reading in the meantime is left to that process. With collect (tests), the shops are
+    read in this process, one after the other."""
     from .awards.importer import match_awards
 
     me = process_token()
@@ -361,23 +433,51 @@ def run_job(con, job_id: int, collect) -> list[str]:
     con.commit()
     keys = con.execute("SELECT shops FROM app_job WHERE id=?", (job_id,)).fetchone()["shops"].split(",")
     requested = con.execute("SELECT requested FROM app_job WHERE id=?", (job_id,)).fetchone()["requested"]
-    done, notes = [], []
-    for key in keys:
-        if con.execute("SELECT 1 FROM run_log WHERE job=? AND finished >= ? LIMIT 1", (key, requested)).fetchone():
-            continue  # read already, before a restart broke this run off
-        if key in running_shops(con):
-            notes.append(f"{key} already running elsewhere")
-            continue
-        wait_for_slot(con, key, job_id)
-        if key in running_shops(con):
-            notes.append(f"{key} already running elsewhere")
-            continue
-        try:
-            collect(SHOPS[key], con=con)
-            done.append(key)
-        except Exception as exc:  # one shop that fails must not stop the others
-            con.rollback()
-            notes.append(f"{key} failed: {exc}")
+
+    log_failure: dict[str, str] = {}
+    if collect is not None:
+        def start(key):  # noqa: F811 - read it here, now
+            try:
+                collect(SHOPS[key], con=con)
+                return _Done(0)
+            except Exception as exc:  # one shop that fails must not stop the others
+                con.rollback()
+                log_failure[key] = str(exc)
+                return _Done(1)
+    start = start or launch_shop
+    pending = [k for k in keys if k in SHOPS]
+    children: dict[str, object] = {}
+    done, notes, said = [], [], ""
+    while pending or children:
+        for key, child in list(children.items()):
+            code = child.poll()
+            if code is None:
+                continue
+            del children[key]
+            if code == 0:
+                done.append(key)
+            else:
+                notes.append(f"{key} failed: {log_failure.get(key) or f'exit {code}'}")
+        started = False
+        for key in list(pending):
+            if con.execute("SELECT 1 FROM run_log WHERE job=? AND finished >= ? LIMIT 1", (key, requested)).fetchone():
+                pending.remove(key)  # read already, before a restart broke this run off
+                continue
+            if key in running_shops(con) and key not in children:
+                pending.remove(key)
+                notes.append(f"{key} already running elsewhere")
+                continue
+            if _free_for(con, key, set(children)):
+                pending.remove(key)
+                children[key] = start(key)
+                started = True
+        note = "waiting for a free place" if pending else None
+        if note != said:
+            con.execute("UPDATE app_job SET note=? WHERE id=?", (note, job_id))
+            said = note
+        con.commit()
+        if any(c.poll() is None for c in children.values()) or (pending and not started):
+            time.sleep(poll)  # shops being read, or waiting for a free place
     if done:
         match_awards(con)
     con.execute("UPDATE app_job SET finished=?, note=? WHERE id=?",

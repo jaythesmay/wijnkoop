@@ -259,7 +259,8 @@ def test_job_waits_for_a_free_place(con, monkeypatch):
             if len(sleeps) == 1:  # while waiting, the other run ends
                 assert con.execute("SELECT note FROM app_job WHERE id=?", (job_id,)).fetchone()[0] == \
                     "waiting for a free place"
-                assert _state(con, "gall", dt.datetime.now())["advice"] == "waiting until fewer shops are being read"
+                assert _state(con, "gall", dt.datetime.now())["advice"] == \
+                    "waiting: 1 of at most 1 shop at once is being read (Vindict)"
                 blocker.kill()
                 blocker.wait()
 
@@ -269,3 +270,81 @@ def test_job_waits_for_a_free_place(con, monkeypatch):
         assert sleeps and read == ["gall"]
     finally:
         blocker.kill()
+
+
+class _Child:
+    """A shop's process in a test: still reading for a few looks, then done."""
+
+    def __init__(self, key, log, looks=2, code=0):
+        self.key, self.log, self.looks, self.code = key, log, looks, code
+
+    def poll(self):
+        self.looks -= 1
+        if self.looks > 0:
+            return None
+        self.log.append(("end", self.key))
+        return self.code
+
+
+def test_job_reads_as_many_shops_at_once_as_allowed(con, monkeypatch):
+    monkeypatch.setattr("wijnkoop.awards.importer.match_awards", lambda con: None)
+    monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
+    monkeypatch.setattr(SHOPS["wijnvoordeel"], "NEEDS_BROWSER", True)
+    monkeypatch.setattr(SHOPS["wijnbeurs"], "NEEDS_BROWSER", True)
+    jobs.set_limits(con, "3", "1")
+    keys = ["gall", "vindict", "wijnvoordeel", "wijnbeurs", "vinio"]
+    job_id = jobs.request_run(con, keys, force=True)["job_id"]
+    log, live = [], set()
+    most = {"all": 0, "browser": 0}
+
+    def start(key):
+        log.append(("start", key))
+        live.add(key)
+        most["all"] = max(most["all"], len(live))
+        most["browser"] = max(most["browser"], sum(jobs.needs_browser(k) for k in live))
+        child = _Child(key, log, code=1 if key == "vinio" else 0)
+        poll = child.poll
+
+        def poll_and_forget():
+            code = poll()
+            if code is not None:
+                live.discard(key)
+            return code
+        child.poll = poll_and_forget
+        return child
+
+    done = jobs.run_job(con, job_id, start=start)
+    assert sorted(done) == ["gall", "vindict", "wijnbeurs", "wijnvoordeel"]
+    assert most == {"all": 3, "browser": 1}  # three at once, one of them with the browser
+    assert [k for what, k in log if what == "start"][:3] == ["gall", "vindict", "wijnvoordeel"]
+    j = con.execute("SELECT finished, note FROM app_job WHERE id=?", (job_id,)).fetchone()
+    assert j["finished"] and j["note"] == "vinio failed: exit 1"
+    assert jobs.failed_lately(con, "vinio") and not jobs.failed_lately(con, "gall")
+
+
+def test_weekly_run_is_a_job_and_waiting_shops_say_why(con, monkeypatch):
+    monkeypatch.setattr(SHOPS["wijnvoordeel"], "NEEDS_BROWSER", True)
+    monkeypatch.setattr(SHOPS["wijnbeurs"], "NEEDS_BROWSER", True)
+    started = []
+    job_id = jobs.start_weekly(con, ["gall", "wijnbeurs", "vinio"], start=started.append)
+    assert started == [job_id]
+    con.execute("UPDATE app_job SET process=? WHERE id=?", (process_token(), job_id))
+    con.commit()
+    assert jobs.weekly_running(con) and jobs.shops_in_live_jobs(con) == {"gall", "wijnbeurs", "vinio"}
+    jobs.set_limits(con, "2", "1")
+    _run(con, "gall", hours_ago=0, finished=False, process=process_token())
+    _run(con, "wijnvoordeel", hours_ago=0, finished=False, process=process_token())
+    status = {s["key"]: s for s in jobs.shop_status(con)["shops"]}
+    assert status["wijnbeurs"]["advice"] == "waiting: at most 1 shop with the headless browser at once (Wijnvoordeel now)"
+    assert status["vinio"]["advice"].startswith("waiting: 2 of at most 2 shops at once are being read (")
+    jobs.set_limits(con, "5", "1")
+    status = {s["key"]: s for s in jobs.shop_status(con)["shops"]}
+    assert status["vinio"]["advice"] == "starts in a moment"
+
+
+def test_one_shop_of_a_job_runs_in_its_own_process(monkeypatch):
+    calls = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
+    jobs.launch_shop("gall")
+    args, kw = calls[0]
+    assert args[-3:] == ["collect", "--one", "gall"] and "start_new_session" not in kw  # Stop ends it too

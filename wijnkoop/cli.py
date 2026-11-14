@@ -39,8 +39,12 @@ def cmd_quality(args):
 
 def cmd_collect(args):
     con = db.connect()
-    if args.job:  # a run started with the button in the app
-        jobs.run_job(con, args.job, collect_shop)
+    if args.job:  # a run started with the button in the app, or the weekly run: starts one process per shop
+        jobs.run_job(con, args.job)
+        return
+    if args.one:  # one shop of such a run, in its own process
+        collect_shop(SHOPS[args.one], con=con)
+        con.close()
         return
     keys = [k for part in (args.shop or []) for k in part.split(",") if k]
     unknown = [k for k in keys if k not in SHOPS]
@@ -146,12 +150,16 @@ def cmd_scheduler(args):
             if jobs.resume_dead_jobs(con):  # runs from the app that a restart broke off
                 time.sleep(30)  # let them claim their shops first
                 continue
-            busy = jobs.running_shops(con)  # a run started from the app
+            # The shops that are due are read as one weekly run in its own process, as many at the
+            # same time as "Shops read at once" allows. Shops being read or waiting in a run are left out.
+            busy = set(jobs.running_shops(con)) | jobs.shops_in_live_jobs(con)
             due = [key for key in SHOPS
-                   if run_is_due(con, now, key) and key not in busy and jobs.slot_free(con, key)]
+                   if run_is_due(con, now, key) and key not in busy and not jobs.failed_lately(con, key)]
             if due:
-                collect_shop(SHOPS[due[0]], con=con)
-                match_awards(con)
+                job_id = jobs.start_weekly(con, due)
+                log.info("Weekly run %s: %s", job_id, ", ".join(due))
+            if jobs.weekly_running(con):  # the other jobs wait until the shops are read
+                time.sleep(30)
                 continue
             # Once, after the shops are read (or at most an hour after new prices came in).
             if scores.recompute_if_due(con, busy=bool(jobs.running_shops(con))):
@@ -358,6 +366,7 @@ def main(argv=None):
     p.add_argument("--due", action="store_true", help="only the shops not read in the last two days")
     p.add_argument("--limit", type=int, default=None, help="only the first N wines (for testing)")
     p.add_argument("--job", type=int, help=argparse.SUPPRESS)
+    p.add_argument("--one", choices=list(SHOPS), help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_collect)
     p = sub.add_parser("check", help="test a few pages and show what was read")
     p.add_argument("--count", type=int, default=3)

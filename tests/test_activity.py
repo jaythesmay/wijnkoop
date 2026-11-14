@@ -37,7 +37,7 @@ def test_snapshot_shows_running_and_waiting_work(tmp_path, monkeypatch):
     w = snap["work"]
     assert [r["job"] for r in w["running"]] == ["Gall & Gall: shop run"] and w["running"][0]["pid"] == os.getpid()
     assert w["queue"][0]["what"].startswith("Upload iwsc.xlsx") and "waiting for the database" in w["queue"][0]["why"]
-    assert any(q["what"] == "Vinio: shop run" and "before it" in q["why"] for q in w["queue"])
+    assert any(q["what"] == "Vinio: shop run" and q["why"] == "starts in a moment" for q in w["queue"])
     assert w["recent"][0]["job"] == "Award check" and w["recent"][0]["took"] == "1 h 00 min"
     mine = next(p for p in snap["sample"]["processes"] if os.getpid() in p["pids"])
     assert "Gall & Gall: shop run (reading)" in mine["doing"] and mine["rss"] > 0
