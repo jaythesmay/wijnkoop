@@ -295,3 +295,78 @@ def test_upload_page_shows_progress_and_offers_the_report(con, tmp_path):
     lines = csv_file.text.lstrip("﻿").splitlines()
     assert lines[0].startswith("producer;wine in the file;") and len(lines) == 4
     assert "attachment" in csv_file.headers["content-disposition"]
+
+
+def test_a_shared_word_is_not_the_same_producer(con):
+    """'Cape Mentelle Heritage Cabernet Sauvignon' was linked to 'Cape Dream Merlot-Cabernet Sauvignon' (76%)."""
+    from wijnkoop.awards import importer
+
+    for i, (title, producer) in enumerate([("Cape Dream Merlot-Cabernet Sauvignon", None),
+                                           ("Cape Mentelle Sauvignon Blanc Semillon", "Cape Mentelle")], 10):
+        p = _wine(i, title, 9.0)
+        p.specs["producer"] = producer
+        p.colour = "white" if "Blanc" in title else "red"
+        save_product(con, 1, p, TODAY.isoformat())
+    files = [b"Producer;Wine;Vintage;Medal\nCape Mentelle;Heritage Cabernet Sauvignon;2020;Silver\n"
+             b"Cape Mentelle;Sauvignon Blanc Semillon;2021;Gold\n",
+             b"Wine;Vintage;Medal\nCape Mentelle Heritage Cabernet Sauvignon;2020;Silver\n"]
+    for n, data in enumerate(files):
+        r = upload.import_upload(con, f"iwsc{n}.csv", data, competition="IWSC", year=2025, today=TODAY)
+        assert all("Cape Dream" not in m["wine"] for m in r["matched"])
+    assert [m["wine"] for m in upload.upload_report(con, 2)["matched"]] == []
+    assert any("Cape Mentelle Sauvignon Blanc Semillon" in m["wine"] for m in upload.upload_report(con, 1)["matched"])
+
+    agree = importer.producers_agree
+    w = importer._words
+    assert not agree(w("Cape Mentelle"), "Heritage", w("Cape Dream"), "Cape Dream Merlot")
+    assert not agree(w("Cape Mentelle"), "Heritage", set(), "Cape Dream Merlot-Cabernet Sauvignon")
+    assert not agree(set(), "Cape Mentelle Heritage Cabernet", set(), "Cape Dream Merlot-Cabernet Sauvignon")
+    assert agree(w("Herdade do Esporão"), "Reserva", w("Esporão"), "Esporão Reserva")
+    assert agree(w("Bodegas Muga"), "Reserva", set(), "Muga Reserva")
+    assert agree(set(), "Bodegas Muga Reserva 2021", w("Bodegas Muga"), "Muga Reserva")
+
+    # A link made before this check is undone when the scores are computed
+    award = con.execute("SELECT id FROM award WHERE name_raw='Heritage Cabernet Sauvignon'").fetchone()[0]
+    dream = con.execute("SELECT id FROM wine WHERE name LIKE 'Cape Dream%'").fetchone()[0]
+    con.execute("INSERT INTO award_match (award_id, wine_id, match_score, confirmed) VALUES (?,?,0.76,NULL)",
+                (award, dream))
+    scores.recompute(con, TODAY)
+    assert not con.execute("SELECT 1 FROM award_match WHERE award_id=?", (award,)).fetchone()
+
+
+def test_say_yes_or_no_to_a_link(con):
+    r = upload.import_upload(con, "mundus.txt", RESULTS, today=TODAY)
+    uid = r["upload"]["id"]
+    olarra = next(m for m in r["matched"] if "Olarra" in m["wine"])
+    assert upload.judge_match(con, uid, olarra["award_id"], olarra["wine_id"], same=False)
+    rows = {m["wine"]: m for m in upload.upload_report(con, uid)["matched"]}
+    assert rows["Bodegas Olarra Crianza 2021"]["check"] == "rejected"
+    assert upload.upload_report(con, uid)["upload"]["linked"] == 1
+    # not linked again by a later check, and shown as not counted on the wine page
+    upload.relink_uploads(con)
+    assert con.execute("SELECT confirmed FROM award_match WHERE award_id=?", (olarra["award_id"],)).fetchone()[0] == 0
+    assert upload.judge_match(con, uid, olarra["award_id"], olarra["wine_id"], same=True)
+    assert upload.upload_report(con, uid)["upload"]["linked"] == 2
+    assert not upload.judge_match(con, uid + 1, olarra["award_id"], olarra["wine_id"], same=True)  # another upload
+
+
+def test_report_buttons_say_yes_or_no(con, tmp_path):
+    from datasette.app import Datasette
+
+    r = upload.import_upload(con, "mundus.txt", RESULTS, today=TODAY)
+    uid, m = r["upload"]["id"], r["matched"][0]
+    con.close()
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                   template_dir=str(ROOT / "datasette" / "templates"))
+
+    async def run():
+        page = await ds.client.get(f"/upload/{uid}")
+        token = re.search(r'name="csrftoken" value="([^"]+)"', page.text).group(1)
+        post = await ds.client.post(f"/upload/{uid}", data={"csrftoken": token, "award": m["award_id"],
+                                                            "wine": m["wine_id"], "verdict": "other"},
+                                    cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")})
+        return page, post, await ds.client.get(f"/upload/{uid}")
+
+    page, post, after = asyncio.run(run())
+    assert "✗ No" in page.text and post.status_code == 302
+    assert "not this wine, not counted" in after.text

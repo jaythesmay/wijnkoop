@@ -453,6 +453,9 @@ def detect(filename: str, rows: list[list[str]]) -> tuple[tuple | None, int | No
 # ---------------------------------------------------------------- store, link, compare
 
 def _match_index(con):
+    """Shop wines by cuvee id: (name to compare with, colour, producer words, name)."""
+    from .importer import _words
+
     rows = con.execute("""SELECT c.id, c.name, c.producer, c.colour FROM cuvee c WHERE c.is_wine = 1
                           AND c.id IN (SELECT w.cuvee_id FROM wine w JOIN offer o ON o.wine_id = w.id)""").fetchall()
     keys = {}
@@ -460,7 +463,7 @@ def _match_index(con):
         full = cuvee_key(r["name"])
         if r["producer"] and norm(r["producer"]) not in norm(r["name"]):
             full = cuvee_key(f"{r['producer']} {r['name']}")
-        keys[r["id"]] = (full, r["colour"])
+        keys[r["id"]] = (full, r["colour"], _words(r["producer"]), r["name"])
     return keys
 
 
@@ -474,7 +477,7 @@ def _choices(keys: dict, colour: str | None) -> dict:
         _CHOICES.clear()
         cache = _CHOICES[id(keys)] = (keys, {})
     if colour not in cache[1]:
-        cache[1][colour] = {cid: k for cid, (k, c) in keys.items() if not (colour and c and c != colour)}
+        cache[1][colour] = {cid: k[0] for cid, k in keys.items() if not (colour and k[1] and k[1] != colour)}
     return cache[1][colour]
 
 
@@ -486,10 +489,20 @@ def _best(keys: dict, rec: dict) -> tuple[int | None, float]:
     if not q:
         return None, 0
     choices = _choices(keys, rec.get("colour"))
-    hit = process.extractOne(q, choices, scorer=fuzz.token_sort_ratio, score_cutoff=REVIEW)
+    from .importer import _words, producers_agree
+
+    pa = _words(rec.get("producer"))
+
+    def same_maker(hit):  # a similar name of another producer is another wine
+        _, _, pw, shop_name = keys[hit[2]]
+        return producers_agree(pa, name, pw, shop_name)
+
+    hit = next(filter(same_maker, process.extract(q, choices, scorer=fuzz.token_sort_ratio,
+                                                  score_cutoff=REVIEW, limit=10)), None)
     if not hit:
         # a shorter shop name inside a longer official name ("... Reserva Especial Selección")
-        hit = process.extractOne(q, choices, scorer=fuzz.token_set_ratio, score_cutoff=95)
+        hit = next(filter(same_maker, process.extract(q, choices, scorer=fuzz.token_set_ratio,
+                                                      score_cutoff=95, limit=10)), None)
         if hit and abs(len(hit[0].split()) - len(q.split())) > 3:
             hit = None
     return (hit[2], hit[1]) if hit else (None, 0)
@@ -713,8 +726,11 @@ def upload_report(con, upload_id: int) -> dict:
                   EXISTS (SELECT 1 FROM offer o WHERE o.wine_id = m.wine_id AND o.is_current = 1) AS on_sale
            FROM award a JOIN award_match m ON m.award_id = a.id JOIN wine w ON w.id = m.wine_id
            WHERE a.source = 'upload' AND a.source_url LIKE ?
-           ORDER BY on_sale DESC, a.points DESC, a.medal""", (like,))]
+           ORDER BY m.confirmed IS NULL DESC, on_sale DESC, a.points DESC, a.medal""", (like,))]
     for r in matched:
+        if r["confirmed"] == 0:
+            r["check"] = "rejected"
+            continue
         official = " ".join(x for x in (r["medal"] or "", f"{r['points']:g}" if r["points"] else "") if x)
         if not r["shop_says"]:
             r["check"] = "not on the shop page"
@@ -751,7 +767,8 @@ def report_rows(con, upload_id: int) -> list[list]:
             "SELECT id, producer_raw, name_raw, vintage, colour, country, medal, points FROM award "
             "WHERE source='upload' AND source_url LIKE ? ORDER BY id", (f"upload:{upload_id}:%",)):
         m = by_award.get(a["id"])
-        status = "not in your shops" if not m else ("linked" if m["confirmed"] else "probable match")
+        status = ("not in your shops" if not m else "linked" if m["confirmed"] == 1
+                  else "rejected by you" if m["confirmed"] == 0 else "probable match")
         out.append([a["producer_raw"] or "", a["name_raw"], a["vintage"] or "", a["colour"] or "", a["country"] or "",
                     a["medal"] or "", f"{a['points']:g}" if a["points"] else "", status,
                     m["wine"] if m else "", round(m["match_score"] * 100) if m else "",
@@ -778,6 +795,22 @@ def uploads(con) -> list[dict]:
     for r in rows:
         r["kept"] = stored_file(r["id"], r["filename"]).exists()
     return rows
+
+
+def judge_match(con, upload_id: int, award_id: int, wine_id: int, same: bool) -> bool:
+    """Loes says whether an award of this upload is for this wine: yes counts it (confirmed 1),
+    no keeps the link visible as 'not counted' (confirmed 0), so it is never linked again."""
+    hit = con.execute(
+        """UPDATE award_match SET confirmed=? WHERE award_id=? AND wine_id=?
+           AND award_id IN (SELECT id FROM award WHERE source='upload' AND source_url LIKE ?)""",
+        (1 if same else 0, award_id, wine_id, f"upload:{upload_id}:%")).rowcount
+    if hit:
+        _count_links(con, upload_id)
+        con.commit()
+        from ..scores import recompute
+
+        recompute(con)
+    return bool(hit)
 
 
 def delete_upload(con, upload_id: int) -> int:
