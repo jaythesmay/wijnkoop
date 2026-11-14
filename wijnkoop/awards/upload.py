@@ -28,7 +28,7 @@ from collections import Counter
 from rapidfuzz import fuzz, process
 
 from ..normalize import split_estate, cuvee_key, norm, strip_accents
-from ..reference import MEDALS, OTHER_COMPETITION, POINTS20_RE, competition_id, find_competition
+from ..reference import MEDALS, OTHER_COMPETITION, POINTS20_RE, award_score, competition_id, find_competition
 
 MAX_BYTES = 40 * 1024 * 1024
 AUTO, REVIEW = 88, 75
@@ -924,10 +924,50 @@ def to_check(con) -> list[dict]:
         if result not in g["results"]:
             g["results"].append(result)
         g["uploads"].add(r["source_url"].split(":")[1])
+        s = award_score(r["medal"], r["points"], r["short"])
+        if s is not None and (g.get("score") is None or s > g["score"]):
+            g["score"] = s
     for g in groups.values():
         g["files"] = len(g.pop("uploads"))
+        g.setdefault("score", None)
         _apart(g)
     return list(groups.values())
+
+
+CHECK_SORTS = {
+    "alike": "most alike first",
+    "unlike": "least alike first",
+    "points": "most points first",
+    "cheap": "cheapest first",
+    "dear": "dearest first",
+    "name": "wine name A-Z",
+}
+
+
+def pick_to_check(rows: list[dict], points=(None, None), price=(None, None), alike=(None, None),
+                  sort: str = "alike") -> list[dict]:
+    """The links of to_check within the ranges you chose (None: no limit), in the order you chose.
+    A range on points or price leaves out the links without points or without a price; alike is in
+    percent, as the page shows it."""
+    def within(value, rng):
+        low, high = rng
+        if low is None and high is None:
+            return True
+        return value is not None and (low is None or value >= low) and (high is None or value <= high)
+
+    out = [r for r in rows if within(r.get("score"), points) and within(r.get("price"), price)
+           and within(round((r.get("match_score") or 0) * 100), alike)]
+    last = float("inf")
+    keys = {
+        "unlike": lambda r: (r["match_score"] or 0, r["award_id"]),
+        "points": lambda r: (-(r["score"] if r["score"] is not None else -last), -(r["match_score"] or 0)),
+        "cheap": lambda r: (r["price"] if r["price"] is not None else last, -(r["match_score"] or 0)),
+        "dear": lambda r: (-(r["price"] if r["price"] is not None else -last), -(r["match_score"] or 0)),
+        "name": lambda r: ((r.get("shop_wine") or "").lower(), r["award_id"]),
+    }
+    if sort in keys:
+        out.sort(key=keys[sort])
+    return out
 
 
 def file_parts(producer_raw, name_raw, shop_producer=None) -> tuple[str | None, str]:
