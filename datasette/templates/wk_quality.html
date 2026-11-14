@@ -1,11 +1,12 @@
 {% extends "wk_base.html" %}
 {% block content %}
+{% set fq = '&focus=1' if focus else '' %}
 <h1>Data quality</h1>
 <p class="lead">WijnKoop goes through the database once a week and lists what looks wrong: the same wine twice,
 one wine that is really two, award links to check, colours, prices and producer names. For each one it suggests
 what to do. You choose, for one at a time or for many at once. What you decide holds when the shops are read again.</p>
 
-{% if said %}<div class="hint ok" role="status">{% if said == 'running' %}The checks are running. This page shows the result when they are done (reload in a few minutes).{% elif said == 'already' %}The checks are running already.{% elif said.startswith('done') %}Done: {{ said[5:] }}. Scores are worked out again in the background.{% elif said.startswith('reopened') %}Back on the list: {{ said[9:] }}.{% endif %}</div>{% endif %}
+{% if said %}<div class="hint ok" role="status">{% if said == 'running' %}The checks are running. This page shows the result when they are done (reload in a few minutes).{% elif said == 'already' %}The checks are running already.{% elif said.startswith('done') %}Done: {{ said[5:] }}. Scores are worked out again in the background.{% elif said.startswith('reopened') %}Back on the list: {{ said[9:] }}.{% elif said.startswith('undone') %}Undone: {{ said[7:] }}. The two wines are apart again, and stay apart.{% endif %}</div>{% endif %}
 
 <div class="panel" style="margin-bottom:18px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
   <div class="small">
@@ -21,11 +22,13 @@ what to do. You choose, for one at a time or for many at once. What you decide h
   </form>
 </div>
 
+{% if auto_total %}<div class="hint">WijnKoop made {{ auto_total }} pair{{ 's' if auto_total != 1 }} of wines one wine by itself, because only the bottle size differed{% if auto_new %} ({{ auto_new }} in the last run){% endif %}. They now have a price per bottle size, compared per 75 cl. <a href="/quality?check=size_only&state=done">Check them</a>; each can be undone.</div>{% endif %}
+
 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:18px">
-  <a class="panel" href="/quality?state={{ state }}" style="text-decoration:none;{% if not check %}border-color:var(--accent){% endif %}">
+  <a class="panel" href="/quality?state={{ state }}{{ fq }}" style="text-decoration:none;{% if not check %}border-color:var(--accent){% endif %}">
     <b>Everything</b><div class="meta">{{ open_total }} to look at</div></a>
   {% for c in checks %}
-  <a class="panel" href="/quality?check={{ c.code }}&state={{ state }}" style="text-decoration:none;{% if check == c.code %}border-color:var(--accent){% endif %}">
+  <a class="panel" href="/quality?check={{ c.code }}&state={{ state }}{{ fq }}" style="text-decoration:none;{% if check == c.code %}border-color:var(--accent){% endif %}">
     <b>{{ c.title }}</b><div class="meta">{% if c.open %}{{ c.open }} to look at{% else %}nothing to look at{% endif %}</div></a>
   {% endfor %}
 </div>
@@ -35,9 +38,12 @@ what to do. You choose, for one at a time or for many at once. What you decide h
 
 <p class="small">
   {% for code, label in [('open', 'To look at'), ('done', 'Done'), ('kept', 'Kept as it is'), ('gone', 'Solved by themselves')] %}
-  {% if state == code %}<b>{{ label }}</b>{% else %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ code }}">{{ label }}</a>{% endif %}{% if not loop.last %} · {% endif %}
+  {% if state == code %}<b>{{ label }}</b>{% else %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ code }}{{ fq }}">{{ label }}</a>{% endif %}{% if not loop.last %} · {% endif %}
   {% endfor %}
 </p>
+<p class="small">{% if state == 'open' %}Wines of €{{ '%g'|format(focus_range[0]) }}–{{ '%g'|format(focus_range[1]) }} a bottle come first, then cheaper ones, then dearer ones. {% endif %}
+  {% if focus %}<b>Only €{{ '%g'|format(focus_range[0]) }}–{{ '%g'|format(focus_range[1]) }}</b> · <a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}">all prices</a>
+  {% else %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}&focus=1">Only €{{ '%g'|format(focus_range[0]) }}–{{ '%g'|format(focus_range[1]) }} ({{ in_focus }})</a>{% endif %}</p>
 
 {% if issues %}
 {% if state == 'open' %}
@@ -45,6 +51,7 @@ what to do. You choose, for one at a time or for many at once. What you decide h
   <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
   <input type="hidden" name="ids" id="bulk-ids" value="">
   {% if check %}<input type="hidden" name="check" value="{{ check }}">{% endif %}
+  {% if focus %}<input type="hidden" name="focus" value="1">{% endif %}
   <label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="all"> all on this page</label>
   <select name="act" id="bulk-act" style="width:auto;max-width:100%">
     <option value="suggested">What WijnKoop suggests for each</option>
@@ -59,7 +66,27 @@ what to do. You choose, for one at a time or for many at once. What you decide h
 {% endif %}
 
 <style>
+#issues tr.cur > td, #issues tr.cur + tr.cmprow > td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+#issues tr.cur > td:first-child, #issues tr.cur + tr.cmprow > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+#issues tr.issue.has-cmp > td { border-bottom: 0; }
+#issues tr.cmprow > td { padding-top: 0; }
+.cmp summary { cursor: pointer; font-size: 14px; margin-top: 0; }
+.cmp .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; max-width: 760px; }
+.cmp .side { border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+.cmp .photo { height: 180px; display: flex; align-items: center; justify-content: center; background: var(--bg); border-radius: 8px; margin-bottom: 8px; }
+.cmp .photo img { max-height: 176px; max-width: 100%; object-fit: contain; }
+.cmp dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; font-size: 14px; }
+.cmp dt { color: var(--muted); font-size: 12px; padding-top: 2px; }
+.cmp dd { margin: 0; overflow-wrap: anywhere; }
+.cmp dd.diff { background: color-mix(in srgb, #e0a100 22%, transparent); border-radius: 4px; padding: 0 4px; font-weight: 600; }
+.cmp ul { margin: 6px 0 0; padding-left: 16px; font-size: 13.5px; }
+.keys kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; background: var(--surface); }
 @media (max-width: 640px) {
+  .cmp .sides { gap: 6px; }
+  .cmp .side { padding: 6px; }
+  .cmp .photo { height: 120px; }
+  .cmp .photo img { max-height: 116px; }
+  .cmp dl { grid-template-columns: 1fr; }
   #issues tr:first-child { display: none; }
   #issues tr { display: grid; grid-template-columns: 1fr; border-bottom: 1px solid var(--line); padding: 6px 0; }
   #issues.picks tr { grid-template-columns: 28px minmax(0, 1fr); }
@@ -68,14 +95,16 @@ what to do. You choose, for one at a time or for many at once. What you decide h
   #issues.picks td:last-child { grid-column: 2; }
 }
 </style>
+{% if state == 'open' %}<p class="small muted keys">Keys: <kbd>↓</kbd> <kbd>↑</kbd> next and previous · <kbd>J</kbd> same wine · <kbd>N</kbd> not the same · <kbd>Enter</kbd> do what is chosen · <kbd>C</kbd> compare open or closed</p>{% endif %}
 <div class="panel" style="overflow-x:auto"><table class="list{% if state == 'open' %} picks{% endif %}" id="issues">
 <tr>{% if state == 'open' %}<th></th>{% endif %}<th>What</th><th>{{ 'What to do' if state == 'open' else 'What happened' }}</th></tr>
 {% for i in issues %}
-<tr id="issue-{{ i.id }}">
+<tr id="issue-{{ i.id }}" class="issue{% if i.compare %} has-cmp{% endif %}"{% if i.yes_no %} data-yes="{{ i.yes_no[0] }}" data-no="{{ i.yes_no[1] }}"{% endif %}>
   {% if state == 'open' %}<td style="width:28px"><input type="checkbox" class="pick" value="{{ i.id }}" aria-label="Select"></td>{% endif %}
   <td style="word-break:break-word"><b>{{ i.title }}</b>
     <div class="meta">{% if not check %}{{ i.check_title }} · {% endif %}{{ i.detail }}</div>
     {% if i.links %}<div class="meta">{% for label, url in i.links %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+    {% if i.price %}<div class="meta">{% if i.in_focus %}<span class="pill v-good">€{{ '%g'|format(focus_range[0]) }}–{{ '%g'|format(focus_range[1]) }}</span> {% endif %}from {{ i.price|money }} a bottle (per 75 cl)</div>{% endif %}
   </td>
   <td style="min-width:220px">
     {% if state == 'open' %}
@@ -89,7 +118,15 @@ what to do. You choose, for one at a time or for many at once. What you decide h
       <button type="submit">Do it</button>
     </form>
     {% else %}
-    <span class="small">{{ i.resolution_label or '' }}</span><div class="meta">{{ (i.resolved_on or '')[:16].replace('T', ' ') }}</div>
+    <span class="small">{{ i.resolution_label or '' }}{% if i.auto %} <span class="pill v-fair">by itself</span>{% endif %}</span><div class="meta">{{ (i.resolved_on or '')[:16].replace('T', ' ') }}</div>
+    {% if i.can_undo %}
+    <form method="post" action="/quality" class="undo" style="margin-top:4px">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="undo" value="1"><input type="hidden" name="ids" value="{{ i.id }}">
+      <input type="hidden" name="state" value="done">{% if check %}<input type="hidden" name="check" value="{{ check }}">{% endif %}
+      <button type="submit" class="small">Undo: different wines</button>
+    </form>
+    {% endif %}
     {% if state == 'kept' %}
     <form method="post" action="/quality" style="margin-top:4px">
       <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
@@ -101,12 +138,33 @@ what to do. You choose, for one at a time or for many at once. What you decide h
     {% endif %}
   </td>
 </tr>
+{% if i.compare %}{% set cmp = i.compare %}
+<tr class="cmprow" id="cmp-{{ i.id }}"><td colspan="{{ 3 if state == 'open' else 2 }}">
+    <details class="cmp"{% if loop.first %} open{% endif %}><summary>Compare side by side{% if cmp.diff %}: {{ cmp.diff|join(', ')|replace('vintages', 'years')|replace('sizes', 'bottle size') }} differ{% else %}: nothing differs{% endif %}</summary>
+      <div class="sides">
+      {% for side in cmp.sides %}
+        <div class="side">
+          <div class="photo">{% if side.image %}<img src="{{ side.image }}" alt="Bottle: {{ side.name }}" loading="lazy" referrerpolicy="no-referrer">{% else %}<span class="small muted">no photo yet</span>{% endif %}</div>
+          <dl>
+            <dt>Name</dt><dd{% if 'name' in cmp.diff %} class="diff"{% endif %}>{% if side.wine_id %}<a href="/wine/{{ side.wine_id }}" target="_blank" rel="noopener">{{ side.name }}</a>{% else %}{{ side.name }}{% endif %}</dd>
+            <dt>Producer</dt><dd{% if 'producer' in cmp.diff %} class="diff"{% endif %}>{{ side.producer or '–' }}</dd>
+            <dt>Colour</dt><dd{% if 'colour' in cmp.diff %} class="diff"{% endif %}>{{ side.colour or '–' }}</dd>
+            <dt>Year</dt><dd{% if 'vintages' in cmp.diff %} class="diff"{% endif %}>{{ side.vintages }}</dd>
+            <dt>Bottle</dt><dd{% if 'sizes' in cmp.diff %} class="diff"{% endif %}>{{ side.sizes }}</dd>
+          </dl>
+          <ul>{% for o in side.offers %}<li><a href="{{ o.url }}" target="_blank" rel="noopener">{{ o.shop }}</a>: {{ o.price|money if o.price else '–' }}{% if o.volume_cl and o.volume_cl != 75 %} for {{ '%g'|format(o.volume_cl) }} cl{% endif %}{% if o.price_per_75cl and o.volume_cl and o.volume_cl != 75 %} ({{ o.price_per_75cl|money }} per 75 cl){% endif %}</li>{% else %}<li class="muted">not on sale now</li>{% endfor %}</ul>
+        </div>
+      {% endfor %}
+      </div>
+    </details>
+</td></tr>
+{% endif %}
 {% endfor %}
 </table></div>
 {% if pages > 1 %}
 <p class="small">Page {{ page }} of {{ pages }} ({{ total }}) ·
-  {% if page > 1 %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}&page={{ page - 1 }}">previous</a>{% endif %}
-  {% if page < pages %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}&page={{ page + 1 }}">next</a>{% endif %}</p>
+  {% if page > 1 %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}{{ fq }}&page={{ page - 1 }}">previous</a>{% endif %}
+  {% if page < pages %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}{{ fq }}&page={{ page + 1 }}">next</a>{% endif %}</p>
 {% endif %}
 {% else %}
 <div class="empty">{% if state == 'open' %}{% if last_run %}Nothing to look at here.{% else %}Press “Run the checks now” to go through the database.{% endif %}{% else %}Nothing here yet.{% endif %}</div>
@@ -138,8 +196,65 @@ what to do. You choose, for one at a time or for many at once. What you decide h
       row.querySelector("td:last-child").innerHTML = d.done ? '<span class="pill v-good">done</span>' : '<span class="muted">already gone</span>';
       const pick = row.querySelector(".pick"); if (pick) { pick.checked = false; pick.disabled = true; sync(); }
       row.style.opacity = .55;
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("cmprow")) { next.style.opacity = .55; const d = next.querySelector("details"); if (d) d.open = false; }
     } catch (e) { btn.disabled = false; btn.textContent = "Not done (" + e.message + "): try again"; }
   }));
+  // Undo a merge: stays on the page
+  document.querySelectorAll("form.undo").forEach(f => f.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const btn = f.querySelector("button"); btn.disabled = true; btn.textContent = "…";
+    try {
+      const r = await fetch("/quality", {method: "POST", body: new URLSearchParams(new FormData(f)),
+                                         credentials: "same-origin", headers: {"x-wk-quick": "1"}});
+      if (!r.ok) throw new Error(r.status === 403 ? "reload the page (F5)" : r.status);
+      const d = await r.json();
+      f.outerHTML = d.undone ? '<span class="pill v-good">undone: apart again</span>' : '<span class="muted">could not undo</span>';
+    } catch (e) { btn.disabled = false; btn.textContent = "Not undone (" + e.message + ")"; }
+  }));
+
+  // Keys: arrows go through the list, J = same wine, N = not the same, Enter = do what is chosen
+  const rows = [...document.querySelectorAll("#issues tr.issue")];
+  let cur = -1;
+  const open = () => rows[cur] && !rows[cur].querySelector("form.one button:disabled") && rows[cur].style.opacity !== "0.55";
+  const cmpOf = row => { const n = row.nextElementSibling; return n && n.classList.contains("cmprow") ? n.querySelector("details.cmp") : null; };
+  function go(i) {
+    if (!rows.length) return;
+    if (rows[cur]) rows[cur].classList.remove("cur");
+    cur = Math.max(0, Math.min(rows.length - 1, i));
+    const row = rows[cur];
+    row.classList.add("cur");
+    const cmp = cmpOf(row);
+    if (cmp) cmp.open = true;
+    row.scrollIntoView({block: "nearest", behavior: "smooth"});
+  }
+  function nextOpen(from) {
+    for (let i = from + 1; i < rows.length; i++) if (rows[i].style.opacity !== "0.55") return i;
+    return from;
+  }
+  function choose(act) {
+    const row = rows[cur], f = row && row.querySelector("form.one");
+    if (!f || !open()) return;
+    const sel = f.querySelector("select[name=act]");
+    if (act) { if (![...sel.options].some(o => o.value === act)) return; sel.value = act; }
+    f.requestSubmit();
+    setTimeout(() => go(nextOpen(cur)), 150);
+  }
+  document.addEventListener("keydown", ev => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || !rows.length) return;
+    const t = ev.target;
+    if (t && (t.tagName === "INPUT" && t.type !== "checkbox" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+    const k = ev.key;
+    if (k === "ArrowDown" || k === "ArrowRight") { go(cur + 1); }
+    else if (k === "ArrowUp" || k === "ArrowLeft") { go(cur - 1); }
+    else if (k === "j" || k === "J") { if (cur < 0) go(0); else choose(rows[cur].dataset.yes); }
+    else if (k === "n" || k === "N") { if (cur < 0) go(0); else choose(rows[cur].dataset.no); }
+    else if (k === "Enter" && cur >= 0 && t.tagName !== "BUTTON" && t.tagName !== "A") { choose(null); }
+    else if ((k === "c" || k === "C") && cur >= 0) { const d = cmpOf(rows[cur]); if (d) d.open = !d.open; }
+    else return;
+    ev.preventDefault();
+  });
+  rows.forEach((r, i) => r.addEventListener("click", ev => { if (!ev.target.closest("a,button,select,input,summary")) go(i); }));
 })();
 </script>
 {% endblock %}

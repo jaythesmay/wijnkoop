@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz, process
 
+from . import scores
 from .normalize import cuvee_key, norm, wine_key
 
 log = logging.getLogger("wijnkoop")
@@ -74,6 +75,12 @@ CHECKS = {
         "Two shops sell what looks like one wine under slightly different names, so their prices are not "
         "compared and its awards may count for one of them only.",
         [("merge", "Same wine: merge"), (KEEP, "Different wines: keep apart")]),
+    "size_only": (
+        "Same wine, other bottle size",
+        "Two names that differ only in the bottle size (magnum, 37.5 cl, 1.5 l). A bottle size is not "
+        "another wine: they become one wine with a price per bottle size, compared per 75 cl. WijnKoop "
+        "does this by itself; the ones it did are under Done, where you can undo one.",
+        [("merge", "Same wine: one wine, a price per bottle size"), (KEEP, "Different wines: keep apart")]),
     "split_awards": (
         "One wine with two results in the same competition",
         "A competition gives one result per wine per year. Two different medals from the same competition "
@@ -132,6 +139,46 @@ class Finding:
 
 def ensure_tables(con):
     con.executescript(SCHEMA)
+    have = {r[1] for r in con.execute("PRAGMA table_info(dq_issue)")}
+    for col, kind in (("price", "REAL"), ("price_on", "TEXT"), ("auto", "INTEGER DEFAULT 0")):
+        if col not in have:
+            con.execute(f"ALTER TABLE dq_issue ADD COLUMN {col} {kind}")
+    missing = con.execute("SELECT id, links FROM dq_issue WHERE price_on IS NULL AND state='open'").fetchall()
+    if missing:  # issues from before prices were kept: once
+        stamp = dt.datetime.now().isoformat(timespec="seconds")
+        for r in missing:
+            con.execute("UPDATE dq_issue SET price=?, price_on=? WHERE id=?",
+                        (issue_price(con, json.loads(r[1] or "[]")), stamp, r[0]))
+        con.commit()
+
+
+# The prices that matter most: these issues come first on the page (ui.FOCUS, Loes's own range)
+FOCUS = (7.0, 15.0)
+WINE_URL = re.compile(r"^/wine/(\d+)")
+
+
+def issue_price(con, links) -> float | None:
+    """The lowest price a bottle (per 75 cl) of the wines an issue is about, in the shops now."""
+    ids = [int(m.group(1)) for _, url in links for m in [WINE_URL.match(url or "")] if m]
+    if not ids:
+        return None
+    row = con.execute(f"""SELECT MIN(COALESCE(price_per_75cl, price)) FROM offer
+                          WHERE wine_id IN ({','.join('?' * len(ids))}) AND is_current = 1 AND gone_since IS NULL
+                            AND price > 0""", ids).fetchone()
+    return round(row[0], 2) if row and row[0] else None
+
+
+# Bottle sizes in a name (after norm()): "magnum", "150cl", "1 5 l", "37 5 cl", "halve fles"
+SIZE_WORDS = re.compile(
+    r"\b(?:magnum|dubbele magnum|jeroboam|rehoboam|methusalem|methuselah|salmanazar|balthazar|nebukadnezar|"
+    r"nebuchadnezzar|halve|half|halbe|piccolo|fles|flessen|bottle|bouteille|"
+    r"\d+(?: \d+)? ?(?:cl|ml|l|ltr|liter|litre|liters))\b")
+BOX = re.compile(r"\b\d+ ?x\b|\bdoos\b|\bkist\b|\bbox\b|\bpakket\b")
+
+
+def strip_size(key: str) -> str:
+    """A cuvee key without its bottle size words."""
+    return re.sub(r"\s+", " ", SIZE_WORDS.sub(" ", key or "")).strip()
 
 
 def _wine_link(wine_id, label="wine"):
@@ -187,7 +234,7 @@ def find_duplicates(con):
 
     shops = _shops_of_cuvees(con)
     rows = [dict(r) for r in con.execute(
-        "SELECT id, name, producer, colour FROM cuvee WHERE COALESCE(is_wine, 1) = 1")
+        "SELECT id, name, producer, colour, norm_key FROM cuvee WHERE COALESCE(is_wine, 1) = 1")
         if r["id"] in shops]
     blocks = defaultdict(list)
     for r in rows:
@@ -208,6 +255,8 @@ def find_duplicates(con):
                 seen.add(pair)
                 if a["colour"] and b["colour"] and a["colour"] != b["colour"]:
                     continue
+                if strip_size(a["norm_key"]) == strip_size(b["norm_key"]):
+                    continue  # only the bottle size differs: find_size_only
                 if not (a["pw"] <= b["pw"] or b["pw"] <= a["pw"]):
                     continue
                 if len(shops[a["id"]]) == 1 and shops[a["id"]] == shops[b["id"]]:
@@ -226,8 +275,33 @@ def find_duplicates(con):
                     f"{round(score)}% alike · {', '.join(sorted(shops[keep['id']]))} / "
                     f"{', '.join(sorted(shops[other['id']]))}",
                     "merge" if score >= 93 else KEEP,
-                    {"keep": keep["id"], "other": other["id"]},
+                    {"keep": keep["id"], "other": other["id"], "other_key": other["norm_key"]},
                     [_wine_link(_cuvee_wine(con, keep["id"]), "first"), _wine_link(_cuvee_wine(con, other["id"]), "second")])
+
+
+def find_size_only(con):
+    """Wines whose names differ only in a bottle size: one wine, sold in more than one size."""
+    shops = _shops_of_cuvees(con)
+    groups = defaultdict(list)
+    for r in con.execute("SELECT id, norm_key, name, colour FROM cuvee WHERE COALESCE(is_wine, 1) = 1"):
+        if r["id"] in shops and not BOX.search(r["norm_key"] or ""):
+            groups[strip_size(r["norm_key"])].append(dict(r))
+    for base, rows in groups.items():
+        if len(rows) < 2 or not base:
+            continue
+        # the name without a size first: the others join it
+        rows.sort(key=lambda r: (r["norm_key"] != base, r["id"]))
+        keep = rows[0]
+        for other in rows[1:]:
+            if keep["colour"] and other["colour"] and keep["colour"] != other["colour"]:
+                continue
+            k1, k2 = sorted((keep["norm_key"], other["norm_key"]))
+            yield Finding(
+                "size_only", f"size_only:{k1}|{k2}", f"{keep['name']} / {other['name']}",
+                f"only the bottle size differs · {', '.join(sorted(shops[keep['id']]))} / "
+                f"{', '.join(sorted(shops[other['id']]))}",
+                "merge", {"keep": keep["id"], "other": other["id"], "other_key": other["norm_key"]},
+                [_wine_link(_cuvee_wine(con, keep["id"]), "first"), _wine_link(_cuvee_wine(con, other["id"]), "second")])
 
 
 def find_split_awards(con):
@@ -390,7 +464,7 @@ def find_orphans(con):
                       "no shop, award or watch", "delete", {"wine_id": r["id"]})
 
 
-FINDERS = [find_probable_awards, find_duplicates, find_split_awards, find_split_alias, find_colours,
+FINDERS = [find_probable_awards, find_size_only, find_duplicates, find_split_awards, find_split_alias, find_colours,
            find_not_wine, find_price_outliers, find_producer_variants, find_orphans]
 
 
@@ -425,32 +499,42 @@ def run_checks(con, now: dt.datetime | None = None, look_for_awards: bool = True
     known = {r["key"]: dict(r) for r in con.execute("SELECT id, key, state FROM dq_issue")}
     new = 0
     for key, f in findings.items():
-        values = (f.title, f.detail, json.dumps(f.links), json.dumps(f.data), f.suggestion, stamp)
+        values = (f.title, f.detail, json.dumps(f.links), json.dumps(f.data), f.suggestion, stamp,
+                  issue_price(con, f.links), stamp)
         old = known.get(key)
         if old is None:
             con.execute("""INSERT INTO dq_issue (check_code, key, title, detail, links, data, suggestion, last_found,
-                                                 first_found, state) VALUES (?,?,?,?,?,?,?,?,?, 'open')""",
+                                                 price, price_on, first_found, state)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?, 'open')""",
                         (f.check, key, *values, stamp))
             new += 1
         elif old["state"] == "kept":
             con.execute("UPDATE dq_issue SET last_found=? WHERE id=?", (stamp, old["id"]))
         else:  # open, or done/gone but found again: open (again)
             con.execute("""UPDATE dq_issue SET title=?, detail=?, links=?, data=?, suggestion=?, last_found=?,
-                                  state='open', resolution=NULL, resolved_on=NULL WHERE id=?""", (*values, old["id"]))
+                                  price=?, price_on=?, state='open', resolution=NULL, resolved_on=NULL, auto=0
+                           WHERE id=?""", (*values, old["id"]))
     gone = 0
     for key, old in known.items():
         if old["state"] == "open" and key not in findings:
             con.execute("UPDATE dq_issue SET state='gone', resolution='no longer found', resolved_on=? WHERE id=?",
                         (stamp, old["id"]))
             gone += 1
+    # Only the bottle size differs: done by itself, listed under Done to check (and undo)
+    sizes = [r[0] for r in con.execute("SELECT id FROM dq_issue WHERE state='open' AND check_code='size_only'")]
+    merged = resolve(con, sizes, "merge")["done"] if sizes else 0
+    if sizes:
+        con.execute(f"UPDATE dq_issue SET auto=1 WHERE state='done' AND id IN ({','.join('?' * len(sizes))})", sizes)
+        scores.mark_dirty(con)
     still = con.execute("SELECT COUNT(*) FROM dq_issue WHERE state='open'").fetchone()[0]
     note = (f"{still} to look at, {new} new, {gone} solved by themselves"
+            + (f", {merged} merged by itself (only the bottle size differed)" if merged else "")
             + (f"; {found_awards} award wines found in the shops" if look_for_awards else ""))
     con.execute("UPDATE run_log SET finished=?, pages_ok=?, note=?, process=NULL WHERE id=?",
                 (dt.datetime.now().isoformat(timespec="seconds"), len(findings), note, run_id))
     con.commit()
     log.info("Data quality: %s", note)
-    return {"open": still, "new": new, "gone": gone, "award_wines_found": found_awards}
+    return {"open": still, "new": new, "gone": gone, "award_wines_found": found_awards, "size_merged": merged}
 
 
 def last_run(con) -> dict | None:
@@ -493,7 +577,14 @@ def recompute_in_background() -> None:
 PER_PAGE = 100
 
 
-def overview(con, check: str | None = None, state: str = "open", page: int = 1) -> dict:
+# J and N on the page: the action for "the same" and for "not the same", per check
+YES_NO = {"probable_award": ("same", "other"), "duplicate": ("merge", KEEP), "size_only": ("merge", KEEP),
+          "split_alias": (KEEP, "split"), "producer_variant": ("same_a", KEEP)}
+BAND = (f"CASE WHEN price BETWEEN {FOCUS[0]} AND {FOCUS[1]} THEN 0 WHEN price < {FOCUS[0]} THEN 1 "
+        "WHEN price > {hi} THEN 2 ELSE 3 END").replace("{hi}", str(FOCUS[1]))
+
+
+def overview(con, check: str | None = None, state: str = "open", page: int = 1, focus: bool = False) -> dict:
     counts = {r["check_code"]: r["n"] for r in con.execute(
         "SELECT check_code, COUNT(*) AS n FROM dq_issue WHERE state='open' GROUP BY check_code")}
     checks = [{"code": code, "title": t, "explain": e, "open": counts.get(code, 0), "actions": a}
@@ -503,21 +594,66 @@ def overview(con, check: str | None = None, state: str = "open", page: int = 1) 
     if check:
         where.append("check_code=?")
         args.append(check)
+    in_focus = con.execute(f"SELECT COUNT(*) FROM dq_issue WHERE {' AND '.join(where)} AND price BETWEEN ? AND ?",
+                           (*args, *FOCUS)).fetchone()[0]
+    if focus:
+        where.append("price BETWEEN ? AND ?")
+        args.extend(FOCUS)
     total = con.execute(f"SELECT COUNT(*) FROM dq_issue WHERE {' AND '.join(where)}", args).fetchone()[0]
     page = max(1, page)
+    # To look at: the wines of €7-15 first, then cheaper, then dearer (cheapest first), then without a price
+    order = (f"{BAND}, COALESCE(price, 0), check_code, id" if args[0] == "open"
+             else "COALESCE(resolved_on, '') DESC, id")
     issues = []
     for r in con.execute(f"""SELECT * FROM dq_issue WHERE {' AND '.join(where)}
-                             ORDER BY check_code, COALESCE(resolved_on, '') DESC, id
-                             LIMIT ? OFFSET ?""", (*args, PER_PAGE, (page - 1) * PER_PAGE)):
+                             ORDER BY {order} LIMIT ? OFFSET ?""", (*args, PER_PAGE, (page - 1) * PER_PAGE)):
         d = dict(r)
         d["links"] = json.loads(d["links"] or "[]")
         d["actions"] = CHECKS.get(d["check_code"], ("", "", []))[2]
         d["check_title"] = CHECKS.get(d["check_code"], (d["check_code"],))[0]
-        d["resolution_label"] = dict(d["actions"]).get(d["resolution"], d["resolution"])
+        d["resolution_label"] = {"undone": "Undone: kept apart"}.get(
+            d["resolution"], dict(d["actions"]).get(d["resolution"], d["resolution"]))
+        d["yes_no"] = YES_NO.get(d["check_code"])
+        d["can_undo"] = d["state"] == "done" and d["resolution"] == "merge" and '"other_key"' in (d["data"] or "")
+        d["in_focus"] = d["price"] is not None and FOCUS[0] <= d["price"] <= FOCUS[1]
+        data = json.loads(d["data"] or "{}")
+        if d["check_code"] in ("duplicate", "size_only") and args[0] == "open":
+            d["compare"] = compare_cuvees(con, data.get("keep"), data.get("other"))
         issues.append(d)
+    auto_new = con.execute("""SELECT COUNT(*) FROM dq_issue WHERE auto=1 AND state='done'
+                              AND resolved_on >= COALESCE((SELECT MAX(started) FROM run_log WHERE job='quality'), '')""",
+                           ).fetchone()[0]
+    auto_total = con.execute("SELECT COUNT(*) FROM dq_issue WHERE auto=1 AND state='done'").fetchone()[0]
     return {"checks": checks, "check": check, "state": args[0], "issues": issues, "total": total, "page": page,
             "pages": max(1, -(-total // PER_PAGE)), "open_total": sum(counts.values()),
-            "last_run": last_run(con), "running": running(con)}
+            "last_run": last_run(con), "running": running(con), "focus": focus, "in_focus": in_focus,
+            "focus_range": FOCUS, "auto_new": auto_new, "auto_total": auto_total}
+
+
+def compare_cuvees(con, *cuvee_ids) -> dict | None:
+    """Two wines side by side: names, producer, colour, vintages, bottle sizes, and each shop's offer
+    with its photo, price and price per 75 cl. `diff` names the fields that differ."""
+    sides = []
+    for cid in cuvee_ids:
+        c = con.execute("SELECT id, name, producer, colour FROM cuvee WHERE id=?", (cid,)).fetchone()
+        if not c:
+            return None
+        offers = [dict(o) for o in con.execute(
+            """SELECT s.name AS shop, o.title, o.volume_cl, o.price, o.price_per_75cl, o.url, o.image_url,
+                      w.vintage, w.id AS wine_id
+               FROM offer o JOIN wine w ON w.id = o.wine_id JOIN shop s ON s.id = o.shop_id
+               WHERE w.cuvee_id = ? AND o.is_current = 1 AND o.gone_since IS NULL
+               ORDER BY o.price_per_75cl IS NULL, o.price_per_75cl LIMIT 6""", (cid,))]
+        sides.append({
+            "name": c["name"], "producer": c["producer"] or "", "colour": c["colour"] or "",
+            "vintages": ", ".join(sorted({str(o["vintage"]) for o in offers if o["vintage"]})) or "no year",
+            "sizes": ", ".join(f"{v:g} cl" for v in sorted({o["volume_cl"] for o in offers if o["volume_cl"]})) or "?",
+            "image": next((o["image_url"] for o in offers if o["image_url"]), None),
+            "offers": offers, "wine_id": offers[0]["wine_id"] if offers else None,
+        })
+    fields = ("name", "producer", "colour", "vintages", "sizes")
+    diff = [f for f in fields if len({norm(str(x[f])) for x in sides}) > 1]
+    return {"sides": sides, "diff": diff}
 
 
 # ---------------------------------------------------------------- doing what you chose
@@ -627,7 +763,8 @@ def split_alias(con, norm_key: str, cuvee_id: int) -> bool:
     new = con.execute("SELECT id FROM cuvee WHERE norm_key=?", (norm_key,)).fetchone()["id"]
     for o in con.execute("""SELECT o.id, o.title, w.vintage, w.colour, w.country, w.region, w.grapes, w.producer
                             FROM offer o JOIN wine w ON w.id = o.wine_id
-                            WHERE w.cuvee_id=? AND o.shop_id IS ?""", (a["cuvee_id"], a["shop_id"])).fetchall():
+                            WHERE w.cuvee_id=? AND (? IS NULL OR o.shop_id = ?)""",
+                         (a["cuvee_id"], a["shop_id"], a["shop_id"])).fetchall():
         if cuvee_key(o["title"] or "") != norm_key:
             continue
         key = wine_key(a["name"], o["vintage"])
@@ -673,6 +810,27 @@ def _act_probable(con, d, act):
 
 def _act_duplicate(con, d, act):
     return merge_cuvees(con, d["keep"], d["other"])
+
+
+def undo(con, issue_ids: list[int]) -> int:
+    """A merge you don't agree with: the second wine becomes a wine of its own again, and the issue is
+    kept as "different wines", so the next run doesn't merge them again."""
+    n = 0
+    stamp = dt.datetime.now().isoformat(timespec="seconds")
+    for issue_id in issue_ids:
+        r = con.execute("SELECT * FROM dq_issue WHERE id=? AND state='done' AND resolution='merge'",
+                        (issue_id,)).fetchone()
+        if not r:
+            continue
+        d = json.loads(r["data"] or "{}")
+        key = d.get("other_key") or con.execute("SELECT norm_key FROM cuvee WHERE id=?",
+                                                (d.get("other"),)).fetchone()
+        if key and split_alias(con, key if isinstance(key, str) else key[0], d["keep"]):
+            con.execute("UPDATE dq_issue SET state='kept', resolution='undone', resolved_on=? WHERE id=?",
+                        (stamp, issue_id))
+            n += 1
+    con.commit()
+    return n
 
 
 def _act_split_awards(con, d, act):
@@ -727,7 +885,7 @@ def _act_orphan(con, d, act):
     return True
 
 
-ACTIONS = {"probable_award": _act_probable, "duplicate": _act_duplicate, "split_awards": _act_split_awards,
+ACTIONS = {"probable_award": _act_probable, "duplicate": _act_duplicate, "size_only": _act_duplicate, "split_awards": _act_split_awards,
            "split_alias": _act_split_alias, "colour_conflict": _act_colour, "colour_missing": _act_colour,
            "not_wine": _act_not_wine, "price_outlier": _act_price, "producer_variant": _act_producer,
            "orphan": _act_orphan}

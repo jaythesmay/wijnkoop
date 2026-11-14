@@ -73,6 +73,7 @@ def as_product_js(item: dict) -> dict:
     return {"handle": item.get("handle"), "title": item.get("title"), "vendor": item.get("vendor"),
             "type": item.get("product_type"), "tags": item.get("tags") or [],
             "description": item.get("body_html"), "variants": variants, "price": first.get("price"),
+            "featured_image": ((item.get("images") or [{}])[0] or {}).get("src"),
             "compare_at_price": first.get("compare_at_price"),
             "available": any(v.get("available") for v in variants) if variants else None}
 

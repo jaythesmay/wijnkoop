@@ -459,7 +459,7 @@ async def quality_page(datasette, request):
         form = parse_qs((await request.post_body()).decode("utf-8", "replace"), keep_blank_values=True)
         one = {k: v[-1] for k, v in form.items()}
         ids = [int(i) for v in form.get("ids", []) for i in v.split(",") if i.strip().isdigit()]
-        back = {k: one[k] for k in ("check", "state", "page") if one.get(k)}
+        back = {k: one[k] for k in ("check", "state", "page", "focus") if one.get(k)}
         if one.get("run"):
             running = await _read(datasette, quality.running)
             if not running:
@@ -468,6 +468,13 @@ async def quality_page(datasette, request):
         elif one.get("reopen"):
             n = await _write(datasette, quality.reopen, ids)
             said = {"said": f"reopened {n}"}
+        elif one.get("undo"):
+            n = await _write(datasette, quality.undo, ids)
+            if n:
+                quality.recompute_in_background()
+            if _wants_json(request):
+                return Response.json({"undone": n})
+            said = {"said": f"undone {n}"}
         else:
             act = one.get("act") or None
             r = await _write(datasette, quality.resolve, ids, None if act == "suggested" else act,
@@ -480,7 +487,7 @@ async def quality_page(datasette, request):
         return Response.redirect("/quality?" + urlencode({**back, **said}))
     page = request.args.get("page") or "1"
     data = await _read(datasette, quality.overview, request.args.get("check"), request.args.get("state") or "open",
-                       int(page) if page.isdigit() else 1)
+                       int(page) if page.isdigit() else 1, request.args.get("focus") == "1")
     return await _page(datasette, request, "wk_quality.html", "Data quality", said=request.args.get("said"), **data)
 
 

@@ -479,6 +479,7 @@ LATER_COLUMNS = {
     "wine": [("wine_name", "TEXT"),
              ("manual_colour", "TEXT")],  # set on the data quality page: wins over the shop
     "award_upload": [("log", "TEXT")],
+    "offer": [("image_url", "TEXT")],  # the bottle photo at the shop, for comparing on the data quality page
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
                     ("price_as_93", "REAL"), ("market_rank", "REAL"), ("best_for_price", "INTEGER DEFAULT 0")],
