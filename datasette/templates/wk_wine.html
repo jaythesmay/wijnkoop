@@ -52,18 +52,21 @@
 <h2>Price for quality</h2>
 <div class="panel">
   <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="Price against score for {{ chart.n }} award wines of this colour">
-    <defs><clipPath id="plot"><rect x="{{ chart.pad }}" y="0" width="{{ chart.width - chart.pad - 8 }}" height="{{ chart.height - chart.pad + 6 }}"/></clipPath></defs>
-    <line class="axis" x1="{{ chart.pad }}" y1="{{ chart.height - chart.pad + 6 }}" x2="{{ chart.width - 8 }}" y2="{{ chart.height - chart.pad + 6 }}"/>
-    {% for t in chart.ticks_s %}<text x="{{ t.x }}" y="{{ chart.height - chart.pad + 20 }}" text-anchor="middle">{{ t.label }}</text>{% endfor %}
-    {% for t in chart.ticks_p %}<line class="axis" x1="{{ chart.pad }}" y1="{{ t.y }}" x2="{{ chart.width - 8 }}" y2="{{ t.y }}" stroke-dasharray="2 3"/><text x="{{ chart.pad - 4 }}" y="{{ t.y + 3 }}" text-anchor="end">{{ t.label }}</text>{% endfor %}
-    <text x="{{ chart.width - 8 }}" y="{{ chart.height - 2 }}" text-anchor="end">score →</text>
-    {% if chart.line %}<line clip-path="url(#plot)" class="equal" x1="{{ chart.line.x1 }}" y1="{{ chart.line.y1 }}" x2="{{ chart.line.x2 }}" y2="{{ chart.line.y2 }}"/>{% endif %}
+    <defs><clipPath id="plot"><rect x="{{ chart.pad }}" y="{{ chart.top }}" width="{{ chart.right - chart.pad }}" height="{{ chart.bottom - chart.top }}"/></clipPath></defs>
+    {% if chart.band %}<rect class="focus" x="{{ chart.pad }}" y="{{ chart.band.y }}" width="{{ chart.right - chart.pad }}" height="{{ chart.band.h }}"/>{% endif %}
+    <line class="axis" x1="{{ chart.pad }}" y1="{{ chart.bottom }}" x2="{{ chart.right }}" y2="{{ chart.bottom }}"/>
+    <line class="axis" x1="{{ chart.pad }}" y1="{{ chart.top }}" x2="{{ chart.pad }}" y2="{{ chart.bottom }}"/>
+    {% for t in chart.ticks_s %}<line class="axis" x1="{{ t.x }}" y1="{{ chart.bottom }}" x2="{{ t.x }}" y2="{{ chart.bottom + 4 }}"/><text x="{{ t.x }}" y="{{ chart.bottom + 15 }}" text-anchor="middle">{{ t.label }}</text>{% endfor %}
+    {% for t in chart.ticks_p %}<line class="grid" x1="{{ chart.pad }}" y1="{{ t.y }}" x2="{{ chart.right }}" y2="{{ t.y }}"/><text x="{{ chart.pad - 4 }}" y="{{ t.y + 3 }}" text-anchor="end"{% if t.focus %} class="in-focus"{% endif %}>{{ t.label }}</text>{% endfor %}
+    <text x="{{ (chart.pad + chart.right) / 2 }}" y="{{ chart.height - 3 }}" text-anchor="middle" class="title">score (points) →</text>
+    <text transform="translate(9 {{ (chart.top + chart.bottom) / 2 }}) rotate(-90)" text-anchor="middle" class="title">price a bottle at 6 →</text>
+    {% if chart.line %}<path clip-path="url(#plot)" class="equal" d="{{ chart.line }}"/>{% endif %}
     {% if chart.frontier %}<path class="frontier" d="{{ chart.frontier }}"/>{% endif %}
     {% for d in chart.dots if not d.me %}<a href="/wine/{{ d.wine_id }}"><circle class="dot{{ ' best' if d.best }}" cx="{{ d.x }}" cy="{{ d.y }}" r="3.5"><title>{{ d.label }}</title></circle></a>{% endfor %}
     {% for d in chart.dots if d.me %}<circle class="dot me" cx="{{ d.x }}" cy="{{ d.y }}" r="6"><title>This wine: {{ d.label }}</title></circle>{% endfor %}
   </svg>
   <div class="legend"><span><i style="background:var(--accent)"></i>this wine</span><span><i style="background:var(--top)"></i>nothing better for less</span><span><i style="background:var(--muted);opacity:.5"></i>other award wines ({{ chart.n }}, {{ wine.colour or 'all' }})</span></div>
-  <p class="small muted" style="margin-bottom:0">Price per bottle at 6 against score. Wines <b>below the dashed line</b> are better buys by your own rule ({{ rule.rate }}% more money per point); above it, worse. <a href="/how#rate">Change the rule</a>.</p>
+  <p class="small muted" style="margin-bottom:0">Price per bottle at 6 against score.{% if chart.band %} The shaded band, <b>{{ chart.band.label }}</b>, is drawn larger: there every euro has the same height; cheaper and dearer wines are squeezed together{% if chart.max_price > 15 %}, up to the dearest at {{ chart.max_price|money }}{% endif %}.{% endif %} Wines <b>below the dashed line</b> are better buys by your own rule ({{ rule.rate }}% more money per point); above it, worse. <a href="/how#rate">Change the rule</a>.</p>
 </div>
 {% endif %}
 

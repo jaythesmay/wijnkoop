@@ -222,4 +222,22 @@ def test_value_chart(con):
     con.execute("UPDATE wine SET colour = 'red'")
     con.commit()
     chart = ui.value_chart(con, "red", wine_id, 20)
-    assert chart["n"] == 3 and sum(d["me"] for d in chart["dots"]) == 1 and chart["line"]
+    assert chart["n"] == 3 and sum(d["me"] for d in chart["dots"]) == 1 and chart["line"].startswith("M")
+    assert chart["ticks_p"] and all(chart["top"] <= t["y"] <= chart["bottom"] for t in chart["ticks_p"])
+    assert all(chart["top"] <= d["y"] <= chart["bottom"] for d in chart["dots"])
+
+
+def test_price_axis_reaches_the_dearest_wine_and_gives_7_to_15_room():
+    scale = ui.PriceScale(3.2, 245.0)
+    assert scale.lo <= 3.2 and scale.hi >= 245 and scale(scale.lo) == 0 and scale(scale.hi) == 1
+    assert 0.45 <= scale(15) - scale(7) <= 0.55  # half the height for €7–15
+    assert abs((scale(8) - scale(7)) - (scale(15) - scale(14))) < 1e-9  # every euro the same there
+    prices = [3.2, 5, 6.99, 7, 9.5, 15, 15.01, 40, 100, 245]
+    assert [scale(p) for p in prices] == sorted(scale(p) for p in prices)
+    ticks = scale.ticks(250)
+    assert {7, 10, 15, 100, scale.hi} <= set(ticks) and max(ticks) >= 245
+    assert all((scale(b) - scale(a)) * 250 >= 13 for a, b in zip(ticks, ticks[1:]))
+    # all wines dearer than the focus, or all within it
+    assert ui.PriceScale(20, 80).focus is None and ui.PriceScale(20, 80).hi >= 80
+    inside = ui.PriceScale(8, 12)
+    assert inside.focus == (7, 15) and inside(7) == 0 and inside(15) == 1

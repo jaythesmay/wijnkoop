@@ -450,9 +450,85 @@ def money(x) -> str:
     return "€" + f"{x:,.2f}"
 
 
+FOCUS = (7.0, 15.0)  # the prices Loes buys most: the chart gives them half its height
+FOCUS_SHARE = 0.5
+_NICE = [1, 1.5, 2, 3, 4, 5, 7.5, 10]  # times 10^n: the labels on the price axis outside the focus
+
+
+def _nice_prices(lo: float, hi: float) -> list[float]:
+    out, e = [], math.floor(math.log10(lo))
+    while 10 ** e <= hi * 10:
+        out += [round(m * 10 ** e, 6) for m in _NICE[:-1]]
+        e += 1
+    return sorted(set(out))
+
+
+class PriceScale:
+    """A price axis with the focus prices (€7–15) drawn large, linear inside: one euro is the same
+    height everywhere between 7 and 15. Cheaper and dearer wines share the rest of the height,
+    on a log scale, so the dearest wine still fits and its price is on the axis."""
+
+    def __init__(self, lo: float, hi: float, focus=FOCUS, share=FOCUS_SHARE):
+        f0, f1 = focus
+        nice = _nice_prices(lo, hi)
+        self.lo = max([p for p in nice if p <= lo * 0.97] or [lo])  # round axis ends, outside every dot
+        self.hi = min([p for p in nice if p >= hi * 1.03] or [hi])
+        if self.lo < f1 and self.hi > f0:  # wines in or around the focus: show all of it
+            self.lo, self.hi = min(self.lo, f0), max(self.hi, f1)
+        lo, hi = self.lo, self.hi
+        parts = []  # (from, to, kind)
+        if lo < f0:
+            parts.append((lo, min(f0, hi), "log"))
+        if hi > f0 and lo < f1:
+            parts.append((max(lo, f0), min(hi, f1), "lin"))
+        if hi > f1:
+            parts.append((max(lo, f1), hi, "log"))
+        outside = sum(math.log(b / a) for a, b, k in parts if k == "log")
+        has_focus = any(k == "lin" for _, _, k in parts)
+        self.parts, start = [], 0.0
+        for a, b, k in parts:
+            if k == "lin":
+                size = share if outside else 1.0
+            else:
+                size = (1 - share if has_focus else 1.0) * math.log(b / a) / outside
+                if has_focus:
+                    size = max(size, 0.12)
+            self.parts.append((a, b, k, start, size))
+            start += size
+        self.total = start
+        self.focus = (max(lo, f0), min(hi, f1)) if has_focus else None
+
+    def __call__(self, price: float) -> float:
+        """0 at the bottom of the axis, 1 at the top (beyond the ends: continued, for the dashed line)."""
+        parts = self.parts
+        part = parts[0] if price < parts[0][0] else next((p for p in parts if price <= p[1]), parts[-1])
+        a, b, k, start, size = part
+        t = (price - a) / (b - a) if k == "lin" else math.log(max(price, 0.01) / a) / math.log(b / a)
+        return (start + t * size) / self.total
+
+    def ticks(self, height_px: float, gap_px: float = 13) -> list[float]:
+        f = self.focus
+        cands = [p for p in _nice_prices(self.lo, self.hi) if self.lo <= p <= self.hi]
+        if f:
+            cands = [p for p in cands if not f[0] < p < f[1]]
+            step = 1 if (self(f[0] + 1) - self(f[0])) * height_px >= gap_px else 2
+            cands += [float(e) for e in range(math.ceil(f[0]), math.floor(f[1]) + 1, step)] + [f[1]]
+        out = []
+        must = {self.lo, self.hi} | (set(f) if f else set())
+        def round_first(p):  # €100 before €75, €50 before €30
+            m = round(p / 10 ** math.floor(math.log10(p)), 6)
+            return [1, 5, 2, 3, 1.5, 7.5, 4].index(m) if m in (1, 5, 2, 3, 1.5, 7.5, 4) else 9
+
+        for p in sorted(set(cands), key=lambda p: (p not in must, p not in must and round_first(p), p)):
+            if all(abs(self(p) - self(q)) * height_px >= gap_px for q in out):
+                out.append(p)
+        return sorted(out)
+
+
 def value_chart(conn, colour, highlight_wine: int | None = None, rate_pct: float = 20.0,
-                width=340, height=230, pad=34) -> dict | None:
-    """Price (log scale) against score for every award wine of one colour, cheapest offer per wine.
+                width=360, height=300, pad=40) -> dict | None:
+    """Price against score for every award wine of one colour, cheapest offer per wine.
+    The price axis gives €7–15 half the height (see PriceScale) and reaches the dearest wine.
     Returns SVG coordinates: dots, the 'nothing better for less' line, and the wine's equal-value line."""
     rows = conn.execute("""SELECT wine_id, MIN(price_per_bottle_at_6) AS price, score,
                                   MAX(nothing_better_for_less = 'yes') AS best
@@ -462,16 +538,19 @@ def value_chart(conn, colour, highlight_wine: int | None = None, rate_pct: float
         return None
     prices = [r[1] for r in rows]
     scores_ = [r[2] for r in rows]
-    lo_p, hi_p = math.log(min(prices) * 0.9), math.log(max(prices) * 1.1)
+    scale = PriceScale(min(prices), max(prices))
     lo_s, hi_s = math.floor(min(scores_)) - 0.5, math.ceil(max(scores_)) + 0.5
+    top, bottom, right = 10, height - pad + 6, width - 8
+    plot_h = bottom - top
+
+    def y_of(price):
+        return round(bottom - scale(price) * plot_h, 1)
 
     def xy(score, price):
-        x = pad + (score - lo_s) / (hi_s - lo_s) * (width - pad - 8)
-        y = height - pad + 6 - (math.log(price) - lo_p) / (hi_p - lo_p) * (height - pad - 6)
-        return round(x, 1), round(y, 1)
+        return round(pad + (score - lo_s) / (hi_s - lo_s) * (right - pad), 1), y_of(price)
 
     dots = [{"x": xy(sc, p)[0], "y": xy(sc, p)[1], "me": wid == highlight_wine, "best": bool(best),
-             "wine_id": wid, "label": f"{sc:g} · €{p:.2f}"} for wid, p, sc, best in rows]
+             "wine_id": wid, "label": f"{sc:g} points · {money(p)}"} for wid, p, sc, best in rows]
     frontier = sorted(((p, sc) for _, p, sc, best in rows if best), key=lambda t: t[0])
     path = ""
     if len(frontier) >= 2:
@@ -483,16 +562,22 @@ def value_chart(conn, colour, highlight_wine: int | None = None, rate_pct: float
             pts.append(f"{x} {y}")
             px = x
         path = "M" + " L".join(pts)
-    line = None
+    line = ""
     me = [r for r in rows if r[0] == highlight_wine]
-    if me:
+    if me:  # the same value as this wine: a curve now that the axis bends at €7 and €15
         _, p0, s0, _ = me[0]
         r = rate_pct / 100
-        a, b = xy(lo_s, p0 * (1 + r) ** (lo_s - s0)), xy(hi_s, p0 * (1 + r) ** (hi_s - s0))
-        line = {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1]}
-    ticks_s = [{"x": xy(t, math.exp(lo_p))[0], "label": t} for t in range(math.ceil(lo_s), math.floor(hi_s) + 1, 2)]
-    ticks_p = [{"y": xy(lo_s, t)[1], "label": f"€{t:g}"} for t in (3, 5, 7.5, 10, 15, 20, 30, 50, 75, 100)
-               if lo_p <= math.log(t) <= hi_p]
-    return {"width": width, "height": height, "pad": pad, "dots": dots, "frontier": path, "line": line,
-            "ticks_s": ticks_s, "ticks_p": ticks_p, "n": len(rows)}
+        steps = int((hi_s - lo_s) * 4)
+        pts = [xy(lo_s + i / 4, p0 * (1 + r) ** (lo_s + i / 4 - s0)) for i in range(steps + 1)]
+        line = "M" + " L".join(f"{x} {y}" for x, y in pts)
+    ticks_s = [{"x": xy(t, scale.lo)[0], "label": t} for t in range(math.ceil(lo_s), math.floor(hi_s) + 1, 2)]
+    ticks_p = [{"y": y_of(t), "label": f"€{t:g}", "focus": scale.focus and scale.focus[0] <= t <= scale.focus[1]}
+               for t in scale.ticks(plot_h)]
+    band = None
+    if scale.focus:
+        band = {"y": y_of(scale.focus[1]), "h": round(y_of(scale.focus[0]) - y_of(scale.focus[1]), 1),
+                "label": f"€{scale.focus[0]:g}–{scale.focus[1]:g}"}
+    return {"width": width, "height": height, "pad": pad, "top": top, "bottom": bottom, "right": right,
+            "dots": dots, "frontier": path, "line": line, "band": band,
+            "ticks_s": ticks_s, "ticks_p": ticks_p, "n": len(rows), "max_price": max(prices)}
 
