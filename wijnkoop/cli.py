@@ -235,6 +235,19 @@ def cmd_vivino_setup(args):
     print(f"Saved in {vivino.SETTINGS}. Test it with: python -m wijnkoop vivino-test")
 
 
+def cmd_vivino_run(args):
+    """This week's Vivino look-ups now (the button on Read shops now), not waiting for the scheduler."""
+    from . import vivino
+
+    con = db.connect()
+    if vivino.running(con):
+        print("The Vivino look-up is running already.")
+        return
+    print(vivino.run_weekly(con))
+    scores.mark_dirty(con)
+    con.close()
+
+
 def cmd_vivino_test(args):
     from . import vivino
 
@@ -359,6 +372,8 @@ def main(argv=None):
     p = sub.add_parser("vivino-setup", help="save a Brave Search API key for Vivino ratings")
     p.add_argument("--forget", action="store_true", help="delete the key and every stored Vivino rating")
     p.set_defaults(func=cmd_vivino_setup)
+    p = sub.add_parser("vivino-run", help="look up this week's Vivino ratings now")
+    p.set_defaults(func=cmd_vivino_run)
     p = sub.add_parser("vivino-test", help="look up Vivino ratings of the best-scored wines (test)")
     p.add_argument("--count", type=int, default=10)
     p.set_defaults(func=cmd_vivino_test)

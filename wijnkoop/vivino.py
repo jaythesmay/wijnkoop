@@ -307,8 +307,59 @@ def wines_to_look_up(con, count: int, today: dt.date | None = None) -> list[int]
            LIMIT ?""", (since, count))]
 
 
+def waiting(con, today: dt.date | None = None) -> int:
+    """How many wines on sale have no Vivino look-up yet, or one older than RECHECK_DAYS."""
+    ensure_tables(con)
+    since = ((today or dt.date.today()) - dt.timedelta(days=RECHECK_DAYS)).isoformat()
+    return con.execute(
+        """SELECT COUNT(DISTINCT wine_id) FROM offer WHERE is_current = 1 AND gone_since IS NULL
+             AND wine_id NOT IN (SELECT wine_id FROM vivino_rating WHERE checked_on >= ?)""", (since,)).fetchone()[0]
+
+
+def running(con) -> dict | None:
+    """The look-up that is going on now, if any."""
+    from .process import is_alive
+
+    r = con.execute("SELECT * FROM run_log WHERE job='vivino' AND finished IS NULL AND process IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1").fetchone()
+    return dict(r) if r and is_alive(r["process"]) else None
+
+
+def status(con, now: dt.datetime | None = None) -> dict:
+    """For the page Read shops now: is it set up, what it did last, what's next, the searches left."""
+    ensure_tables(con)
+    now = now or dt.datetime.now()
+    today = now.date()
+    used = searches_this_month(con, today)
+    last = con.execute("SELECT * FROM run_log WHERE job='vivino' AND finished IS NOT NULL "
+                       "ORDER BY id DESC LIMIT 1").fetchone()
+    last = dict(last) if last else None
+    has_key = bool(load_key())
+    now_running = running(con)
+    nxt = None
+    if has_key and not now_running:
+        nxt = "as soon as the shop runs are done" if weekly_due(con, now) else \
+            (dt.datetime.fromisoformat(last["started"]) + dt.timedelta(days=7)).strftime("%A %d %B")
+    room = max(0, min(WEEKLY, MONTHLY_LIMIT - used))
+    counts = con.execute("SELECT COUNT(*), COUNT(rating) FROM vivino_rating").fetchone()
+    return {"has_key": has_key, "running": now_running, "last": last, "next": nxt, "used": used,
+            "limit": MONTHLY_LIMIT, "weekly": WEEKLY, "room": room, "checked": counts[0], "rated": counts[1],
+            "waiting": waiting(con, today), "month": today.strftime("%B")}
+
+
+def start_in_background() -> None:
+    """A look-up as its own process, so the page stays quick."""
+    import subprocess
+    import sys
+    import threading
+
+    proc = subprocess.Popen([sys.executable, "-m", "wijnkoop", "vivino-run"], start_new_session=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    threading.Thread(target=proc.wait, daemon=True).start()
+
+
 def weekly_due(con, now: dt.datetime) -> bool:
-    if not load_key():
+    if not load_key() or running(con):
         return False
     row = con.execute("SELECT MAX(started) FROM run_log WHERE job='vivino' AND finished IS NOT NULL").fetchone()
     return not row[0] or (now - dt.datetime.fromisoformat(row[0])).days >= 7
@@ -321,14 +372,21 @@ def run_weekly(con, key: str | None = None, client=None, today: dt.date | None =
     log = logging.getLogger("wijnkoop")
     key = key or load_key()
     ensure_tables(con)
+    from .process import process_token
+
     now = dt.datetime.now().isoformat(timespec="seconds")
-    run_id = con.execute("INSERT INTO run_log (job, started) VALUES ('vivino', ?)", (now,)).lastrowid
-    con.commit()
     room = max(0, min(WEEKLY, MONTHLY_LIMIT - searches_this_month(con, today)))
+    wines = wines_to_look_up(con, room, today) if key else []
+    run_id = con.execute("INSERT INTO run_log (job, started, process, note) VALUES ('vivino', ?, ?, ?)",
+                         (now, process_token(), f"looking up {len(wines)} wines")).lastrowid
+    con.commit()
     found = failed = done = 0
-    note = None
+    note = None if key else "no Brave key"
+    if key and not room:
+        note = f"the {MONTHLY_LIMIT} searches of this month are used"
     client = client or httpx.Client(timeout=20)
-    for wine_id in wines_to_look_up(con, room, today) if key else []:
+    for wine_id in wines:
+        con.execute("UPDATE run_log SET pages_ok=?, pages_failed=? WHERE id=?", (done, failed, run_id))
         try:
             row = look_up(con, key, wine_id, client, today)
         except httpx.HTTPStatusError as e:
@@ -343,7 +401,7 @@ def run_weekly(con, key: str | None = None, client=None, today: dt.date | None =
             continue
         done += 1
         found += row["rating"] is not None
-    con.execute("UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=? WHERE id=?",
+    con.execute("UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=?, process=NULL WHERE id=?",
                 (dt.datetime.now().isoformat(timespec="seconds"), done, failed,
                  note or f"{found} of {done} wines got a Vivino rating", run_id))
     con.commit()
