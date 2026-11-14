@@ -19,8 +19,9 @@ nothing better for less = no other wine of the same colour, in stock online, sco
 fair     = only for information in the expert tables: ln(price) = c + d * score fitted on the shops'
            award wines (one point per wine).
 deal     = price per bottle at 6 bottles at least 15% below this offer's own 90-day
-           median, or below the cheapest other shop. Until 90 days of history exist,
-           the normal (non-promotion) price is the reference.
+           median, or at least 5% below the cheapest other shop. With 4 to 13 weeks of history the
+           median of those weeks is the reference; before that the shop's normal price (never its
+           struck-through "was" price).
 """
 import bisect
 import datetime as dt
@@ -204,15 +205,26 @@ def _wine_scores(con, now):
     return wine_overall
 
 
+MIN_HISTORY_DAYS = 28  # with 4 weeks of our own prices, those count instead of the shop's own price
+CHEAPEST_MARGIN = 0.05  # "cheapest shop" is a deal only when at least this much cheaper than the next shop
+
+
 def _reference_price(history: list[tuple[str, float]], normal: float | None, today: dt.date):
-    """history: [(seen_on, effective price per 75cl)], oldest first."""
+    """history: [(seen_on, effective price per 75cl)], oldest first. 90 days of history: their
+    median. 4 weeks: the median of what we saw. Before that: the shop's own normal price (never its
+    struck-through "was" price, which is often a list price nobody paid)."""
     if history:
         first = dt.date.fromisoformat(history[0][0])
-        if (today - first).days >= HISTORY_DAYS:
+        days = (today - first).days
+        if days >= HISTORY_DAYS:
             since = (today - dt.timedelta(days=HISTORY_DAYS)).isoformat()
             recent = [p for d, p in history if d >= since and p]
             if recent:
                 return statistics.median(recent), "90-day median"
+        if days >= MIN_HISTORY_DAYS:
+            seen = [p for _, p in history if p]
+            if seen:
+                return statistics.median(seen), f"{days // 7}-week median"
     return normal, "normal price"
 
 
@@ -253,9 +265,36 @@ def refresh_effective_prices(con) -> int:
     return changed
 
 
+DIRTY_KEY = "scores_dirty"
+DIRTY_MAX_HOURS = 1  # while shops are still being read, recompute at most this long after new prices
+
+
+def mark_dirty(con) -> None:
+    """New prices or awards are in: the scores are worked out again once no shop is being read
+    (or within an hour), instead of after every shop. One recompute instead of thirty a week."""
+    con.execute("INSERT INTO setting (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+                (DIRTY_KEY, dt.datetime.now().isoformat(timespec="seconds")))
+    con.commit()
+
+
+def recompute_if_due(con, busy: bool, now: dt.datetime | None = None):
+    """Recompute when marked dirty and no shop is being read, or when it has waited an hour."""
+    now = now or dt.datetime.now()
+    row = con.execute("SELECT value FROM setting WHERE key=?", (DIRTY_KEY,)).fetchone()
+    if not row:
+        return None
+    since = dt.datetime.fromisoformat(row[0])
+    if busy and now - since < dt.timedelta(hours=DIRTY_MAX_HOURS):
+        return None
+    return recompute(con)
+
+
 def recompute(con, today: dt.date | None = None):
     today = today or dt.date.today()
     now = dt.datetime.now().isoformat(timespec="seconds")
+    # Changes that come in while this runs mark it dirty again: only the mark from before is cleared.
+    con.execute("DELETE FROM setting WHERE key=? AND value <= ?", (DIRTY_KEY, now))
+    con.commit()
     # Short writes with the working-out in between: other runs and the app's own buttons
     # (Save, Read now, Watch) do not have to wait minutes for a shop run's scores.
     refresh_effective_prices(con)
@@ -288,7 +327,8 @@ def recompute(con, today: dt.date | None = None):
     for o in offers:
         s = wine_overall.get(o["wine_id"])
         eff = o["effective_price_per_75cl"]
-        if s and eff and (o["wine_id"] not in cheapest_per_wine or eff < cheapest_per_wine[o["wine_id"]][0]):
+        # the market is what you can buy: wines out of stock online do not count
+        if s and eff and o["in_stock_online"] != 0 and (o["wine_id"] not in cheapest_per_wine or eff < cheapest_per_wine[o["wine_id"]][0]):
             cheapest_per_wine[o["wine_id"]] = (eff, s)
     c, d, n_fit = fit_price(list(cheapest_per_wine.values()))
     con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('price_per_point_pct', ?)",
@@ -322,14 +362,12 @@ def recompute(con, today: dt.date | None = None):
         bottle = round(eff * (o["volume_cl"] or 75) / 75, 2)
         total6, delivery = order_of_six(bottle, o["delivery_cost"], o["free_delivery_from"])
         normal = o["price_per_75cl"]
-        if o["was_price"] and o["volume_cl"]:
-            normal = max(normal or 0, round(o["was_price"] * 75 / o["volume_cl"], 2))
         ref, ref_kind = _reference_price(history.get(o["id"], []), normal, today)
         reasons = []
         if ref and eff <= ref * (1 - DEAL_DROP):
             reasons.append(f"{round(100 * (1 - eff / ref))}% below {ref_kind}")
         others = [p for p, shop in cheapest.get(o["wine_id"], []) if shop != o["shop_id"]]
-        if others and eff < min(others):
+        if others and eff <= min(others) * (1 - CHEAPEST_MARGIN):
             reasons.append("cheapest shop")
         score = wine_overall.get(o["wine_id"])
         fair = ratio = value = p93 = rank = None
@@ -340,7 +378,8 @@ def recompute(con, today: dt.date | None = None):
             # rank of this offer among the market (the cheapest offer of each wine)
             if len(market) >= 2:
                 # the wine's own market entry is its cheapest offer, never higher than this one
-                rank = round((len(sorted93) - bisect.bisect_right(sorted93, p93)) / (len(sorted93) - 1), 3)
+                # (an offer out of stock has no market entry of its own: never above 1)
+                rank = min(1.0, round((len(sorted93) - bisect.bisect_right(sorted93, p93)) / (len(sorted93) - 1), 3))
             value = round(math.log(median93 / p93) / math.log(1 + rate), 1) if median93 else None
             p93 = round(p93, 2)
         rows.append((o["id"], round(eff, 2), total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
@@ -352,6 +391,9 @@ def recompute(con, today: dt.date | None = None):
                                     wine, price_as_93, market_rank, best_for_price)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     con.commit()
+    from .db import optimize
+
+    optimize(con)
     return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),
             "fit_wines": n_fit, "rate_pct": rate * 100}
 

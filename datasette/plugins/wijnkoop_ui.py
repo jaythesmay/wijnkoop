@@ -422,6 +422,7 @@ def prepare_connection(conn, database):
     "database is locked" after Datasette's usual 5 seconds."""
     if database == DB:
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT * 1000}")
+        conn.execute("PRAGMA synchronous = NORMAL")
 
 
 def _busy(e: Exception) -> bool:

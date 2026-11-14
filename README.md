@@ -57,7 +57,7 @@ and open `http://<nas tailscale name>:8001`.
   Falstaff and other critic scores, often of another vintage; its own "Vino.com" score is left out.
   Its "Laagste prijs" (lowest price of the last 30 days) counts as the normal price of a reduced wine.
 - Vanouds de Zwaan (about 2,900 products) and Vinio (about 180) are Shopify shops: WijnKoop reads the
-  small product data Shopify offers per wine instead of the full page. Vinio's descriptions name critic
+  product list Shopify offers (`/products.json`, 250 wines per request, so a run takes a few minutes); a wine missing there is read from its own small product data. Vinio's descriptions name critic
   scores (Parker, Suckling, Falstaff). Colaris (about 1,400 pages) asks for 20 s between pages, so a run
   takes about 8 hours; it shows Parker and other critic scores. Wijny is Bon Import's webshop (about
   4,000 pages including spirits and beer, which are skipped). Alex Storms (about 480 wines) shows
@@ -81,6 +81,13 @@ and open `http://<nas tailscale name>:8001`.
   median price for an order of 6 bottles (`wijnkoop/scores.py`).
 - Sends the weekly overview by e-mail on Wednesday at 08:00 (later the same week if the NAS was off).
 - Older databases are upgraded automatically when the container starts.
+- Makes a copy of the database every night at 04:00 in `/data/backups` (`WIJNKOOP_BACKUP_HOUR`): the last
+  7 days and one a week for 4 weeks before that. To go back, stop the container and put a copy in place of
+  `/data/wijnkoop.db`.
+- Works out scores, value and deals once after the shops are read (at most an hour after new prices
+  come in while other shops are still being read), not after every shop.
+- The container uses at most 2 processor cores and 1.5 GB of memory (`cpus` and `mem_limit` in
+  `docker-compose.yml`).
 - Award results: IWC (with points) and Concours Mondial are read automatically, weekly in
   the award seasons (March, late May to June, September, late November) and monthly otherwise.
   Decanter and IWSC are only known from what shops print, because their sites forbid or block robots.
