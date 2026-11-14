@@ -259,6 +259,7 @@ CREATE VIEW wine_list AS
 SELECT
     w.name AS wine,
     w.producer,
+    w.wine_name,
     w.vintage,
     w.colour,
     w.country,
@@ -288,6 +289,7 @@ SELECT
     w.name AS wine,
     w.vintage,
     w.producer,
+    w.wine_name,
     w.colour,
     w.country,
     s.name AS shop,
@@ -338,9 +340,13 @@ SELECT
     a.points,
     w.id AS wine_id,
     w.name AS wine,
+    w.producer,
+    w.wine_name,
     w.vintage,
     w.colour,
     w.country,
+    a.producer_raw AS file_producer,
+    a.name_raw AS file_wine,
     (SELECT MIN(os.bottle_price_at_6) FROM offer o JOIN offer_score os ON os.offer_id = o.id
       WHERE o.wine_id = w.id AND o.is_current = 1 AND o.gone_since IS NULL) AS price_per_bottle_at_6,
     a.source,
@@ -356,6 +362,8 @@ SELECT
     e.kind,
     e.wine_id,
     w.name AS wine,
+    w.producer,
+    w.wine_name,
     w.vintage,
     s.name AS shop,
     e.old_value,
@@ -465,13 +473,36 @@ def _backup(con, path, version):
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
     "run_log": [("process", "TEXT"), ("wait_until", "TEXT")],
-    "cuvee": [("manual_is_wine", "INTEGER")],  # set on the data quality page: wins over the shop
-    "wine": [("manual_colour", "TEXT")],  # set on the data quality page: wins over the shop
+    # The wine's own name, without the estate (which is in producer): "Reserva Tinto" of Esporao
+    "cuvee": [("wine_name", "TEXT"),
+              ("manual_is_wine", "INTEGER")],  # set on the data quality page: wins over the shop
+    "wine": [("wine_name", "TEXT"),
+             ("manual_colour", "TEXT")],  # set on the data quality page: wins over the shop
     "award_upload": [("log", "TEXT")],
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
                     ("price_as_93", "REAL"), ("market_rank", "REAL"), ("best_for_price", "INTEGER DEFAULT 0")],
 }
+
+
+def fill_wine_names(con, only_missing: bool = True) -> int:
+    """Estate and wine apart: wine_name is the name without the producer at its start."""
+    from .normalize import split_estate
+
+    n = 0
+    for table, sql in (
+            ("cuvee", "SELECT id, name, producer FROM cuvee"),
+            ("wine", "SELECT w.id, w.name, COALESCE(w.producer, c.producer) AS producer FROM wine w "
+                     "LEFT JOIN cuvee c ON c.id = w.cuvee_id")):
+        where = " WHERE wine_name IS NULL" if only_missing else ""
+        ids = {r[0] for r in con.execute(f"SELECT id FROM {table}{where}")}
+        if not ids:
+            continue
+        rows = [(split_estate(r[1], r[2])[1], r[0]) for r in con.execute(sql) if r[0] in ids]
+        con.executemany(f"UPDATE {table} SET wine_name=? WHERE id=?", rows)
+        n += len(rows)
+    con.commit()
+    return n
 
 
 def _add_later_columns(con):
@@ -520,6 +551,7 @@ def connect(path=None):
 
     ensure_quality(con)
     _add_later_columns(con)
+    fill_wine_names(con)
     con.executescript(VIEWS)
     con.execute("PRAGMA foreign_keys = ON")
     from .reference import seed

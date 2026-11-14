@@ -14,6 +14,8 @@
   <tr><td>New awards stored</td><td class="num"><b>{{ "{:,}".format(upload.awards or 0) }}</b></td></tr>
   <tr><td>Linked to a wine in your shops</td><td class="num"><b>{{ "{:,}".format(upload.linked or 0) }}</b></td></tr>
   <tr><td>Probable match (counts; you can say yes or no below)</td><td class="num">{{ "{:,}".format(upload.to_review or 0) }}</td></tr>
+  {% if log.review_known %}<tr><td>… of which already on <a href="/upload/check">the list to check</a> from an earlier file</td><td class="num">{{ "{:,}".format(log.review_known) }}</td></tr>{% endif %}
+  {% if log.answered_before %}<tr><td>Answered before in an earlier file: your Yes or No was used</td><td class="num">{{ "{:,}".format(log.answered_before) }}</td></tr>{% endif %}
   {% if log.not_linked is defined %}<tr><td>Not (yet) in your shops</td><td class="num">{{ "{:,}".format(log.not_linked) }}</td></tr>{% endif %}
   {% if log.shop_wines %}<tr><td>Shop wines compared with</td><td class="num">{{ "{:,}".format(log.shop_wines) }}</td></tr>{% endif %}
   </table>
@@ -50,23 +52,66 @@
 {% if counts['not on the shop page'] %}<span class="tag">{{ counts['not on the shop page'] }} not mentioned by the shop</span>{% endif %}
 </p>
 <p class="small muted">A probable match counts until you say otherwise. If an award is for another wine, press ✗ No: it is then not counted and not linked to that wine again.</p>
-<div class="panel" style="margin-bottom:18px"><table class="list">
-<tr><th>Wine</th><th>Official</th><th>Shop says</th><th>Check</th><th>Same wine?</th></tr>
+<style>
+#links th.grp{border-bottom:0;padding-bottom:0}
+#links td.estate,#links td.wn{overflow-wrap:break-word;min-width:6em}
+@media (max-width:640px){
+  #links tr.head{display:none}
+  #links,#links tbody,#links tr,#links td{display:block}
+  #links tr{padding:10px 0;border-bottom:1px solid var(--line)}
+  #links td,#links td.num{border:0;padding:2px 0;text-align:left;min-width:0}
+  #links td:empty{display:none}
+  #links td[data-label]::before{content:attr(data-label);display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+}
+</style>
+<div class="panel" style="margin-bottom:18px;overflow-x:auto"><table class="list" id="links">
+<tr class="head"><th colspan="2" class="grp">In the file</th><th colspan="2" class="grp">In your shops</th><th colspan="5"></th></tr>
+<tr class="head"><th>Estate</th><th>Wine</th><th>Estate</th><th>Wine</th><th class="num">Price</th><th>Official</th><th>Shop says</th><th>Check</th><th>Same wine?</th></tr>
 {% for m in matched %}
 <tr id="a{{ m.award_id }}"{% if m.confirmed == 0 %} class="muted"{% endif %}>
-  <td><a href="/wine/{{ m.wine_id }}">{{ m.wine }}</a>
-    <div class="meta">file: {{ m.name_raw }}{% if m.award_vintage %} {{ m.award_vintage }}{% endif %}{% if not m.confirmed %} · probable match ({{ (m.match_score * 100)|round|int }}%){% endif %}{% if not m.on_sale %} · not on sale now{% endif %}</div></td>
-  <td>{{ m.medal or '' }}{% if m.points %} {{ '%g'|format(m.points) }}{% endif %}</td>
-  <td>{{ m.shop_says or '' }}</td>
-  <td>{% if m.check == 'confirmed' %}<span class="tag best">✓ confirmed</span>{% elif m.check == 'different' %}<span class="tag stock">different</span>{% elif m.check == 'rejected' %}<span class="small">not this wine, not counted</span>{% else %}<span class="muted small">new</span>{% endif %}</td>
-  <td style="white-space:nowrap"><form method="post" action="/upload/{{ upload.id }}" style="display:inline">
+  <td data-label="Estate in the file" class="estate">{% if m.file_estate %}{{ m.file_estate }}{% else %}<span class="muted small">not in the file</span>{% endif %}</td>
+  <td data-label="Wine in the file" class="wn">{{ m.file_wine }}{% if m.award_vintage %} {{ m.award_vintage }}{% endif %}</td>
+  <td data-label="Estate in your shops" class="estate">{{ m.shop_estate or '' }}</td>
+  <td data-label="Wine in your shops" class="wn"><a href="/wine/{{ m.wine_id }}">{{ m.shop_wine }}</a>{% if m.wine_vintage %} {{ m.wine_vintage }}{% endif %}
+    {% if m.confirmed is none or not m.on_sale %}<div class="meta">{% if m.confirmed is none %}probable match ({{ (m.match_score * 100)|round|int }}%){% endif %}{% if m.confirmed is none and not m.on_sale %} · {% endif %}{% if not m.on_sale %}not on sale now{% endif %}</div>{% endif %}</td>
+  <td data-label="Price" class="num" style="white-space:nowrap">{% if m.price %}{{ m.price|money }}{% if m.volume_cl and m.volume_cl != 75 %} <span class="meta">{{ m.volume_cl|bottle_size }}</span>{% endif %}
+    <div class="meta">{{ m.price_shop }}{% if m.shops > 1 %} +{{ m.shops - 1 }}{% endif %}</div>{% else %}<span class="muted">–</span>{% endif %}</td>
+  <td data-label="Official">{{ m.medal or '' }}{% if m.points %} {{ '%g'|format(m.points) }}{% endif %}</td>
+  <td data-label="Shop says">{{ m.shop_says or '' }}</td>
+  <td data-label="Check" class="check">{% if m.check == 'confirmed' %}<span class="tag best">✓ confirmed</span>{% elif m.check == 'different' %}<span class="tag stock">different</span>{% elif m.check == 'rejected' %}<span class="small">not this wine, not counted</span>{% else %}<span class="muted small">new</span>{% endif %}</td>
+  <td style="white-space:nowrap"><form method="post" action="/upload/{{ upload.id }}" class="verdict" style="display:inline">
     <input type="hidden" name="csrftoken" value="{{ csrftoken() }}"><input type="hidden" name="award" value="{{ m.award_id }}"><input type="hidden" name="wine" value="{{ m.wine_id }}">
-    {% if m.confirmed != 1 %}<button type="submit" name="verdict" value="same" title="Yes, this award is for this wine: count it">✓ Yes</button>{% endif %}
-    {% if m.confirmed != 0 %}<button type="submit" name="verdict" value="other" title="No, another wine: don't count it">✗ No</button>{% endif %}
+    <span class="said small">{% if m.confirmed == 1 %}<b>✓ Yes</b>, counts{% elif m.confirmed == 0 %}<b>✗ No</b>, not counted{% else %}not checked yet{% endif %}</span><br>
+    <button type="submit" name="verdict" value="same" title="Yes, this award is for this wine: count it"{% if m.confirmed == 1 %} hidden{% endif %}>✓ Yes</button>
+    <button type="submit" name="verdict" value="other" title="No, another wine: don't count it"{% if m.confirmed == 0 %} hidden{% endif %}>✗ No</button>
   </form></td>
 </tr>
 {% endfor %}
 </table></div>
+<script>
+// Yes / No: saved at once, the row shows your choice and stays where it is.
+document.querySelectorAll("form.verdict").forEach(f => f.addEventListener("submit", async ev => {
+  const btn = ev.submitter; if (!btn) return;
+  ev.preventDefault();
+  const body = new URLSearchParams(new FormData(f)); body.set("verdict", btn.value);
+  const said = f.querySelector(".said"), row = f.closest("tr");
+  said.textContent = "Saving…";
+  try {
+    const r = await fetch(f.action, {method: "POST", body, credentials: "same-origin", headers: {"x-wk-quick": "1"}});
+    if (r.status === 403) throw new Error("reload the page (F5) and try again");
+    const d = await r.json();
+    if (!d.saved) throw new Error("this link is gone; reload the page");
+    const yes = d.verdict === "same";
+    said.innerHTML = yes ? "<b>✓ Yes</b>, counts" : "<b>✗ No</b>, not counted";
+    f.querySelector('[value="same"]').hidden = yes;
+    f.querySelector('[value="other"]').hidden = !yes;
+    row.classList.toggle("muted", !yes);
+    const check = row.querySelector("td.check");
+    if (!yes) check.innerHTML = '<span class="small">not this wine, not counted</span>';
+  } catch (e) { said.textContent = "Not saved: " + e.message; }
+}));
+</script>
+<p class="small muted">Your choice is saved at once. The scores are worked out again in the background, within a minute.</p>
 {% endif %}
 
 {% if missing %}

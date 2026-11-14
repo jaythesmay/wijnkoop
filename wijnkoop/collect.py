@@ -10,7 +10,7 @@ from .pace import ShopSaysWait
 from .fetch import NotAllowed, PoliteClient
 from .bottles import fix_volume
 from .deals import effective_per_75cl, parse_deal
-from .normalize import cuvee_key, norm, wine_key
+from .normalize import cuvee_key, norm, split_estate, wine_key
 from .process import process_token
 from .reference import competition_id, parse_award_text
 from .shops import gall
@@ -268,7 +268,20 @@ def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=Non
         (offer_id, today, p.price, p.promotion, p.was_price, effective, stock),
     )
     _save_awards(con, p, wine_id, offer_id, shop_id, today)
+    _wine_name(con, wine_id, cuvee_id)
     return offer_id
+
+
+def _wine_name(con, wine_id: int, cuvee_id: int):
+    """Estate and wine apart: the wine's own name, without the producer at its start."""
+    for table, row_id, sql in (
+            ("wine", wine_id, "SELECT w.name, COALESCE(w.producer, c.producer) FROM wine w "
+                              "LEFT JOIN cuvee c ON c.id = w.cuvee_id WHERE w.id=?"),
+            ("cuvee", cuvee_id, "SELECT name, producer FROM cuvee WHERE id=?")):
+        r = con.execute(sql, (row_id,)).fetchone()
+        if r:
+            con.execute(f"UPDATE {table} SET wine_name=? WHERE id=? AND wine_name IS NOT ?",
+                        (split_estate(r[0], r[1])[1], row_id, split_estate(r[0], r[1])[1]))
 
 
 def mark_gone(con, shop_id: int, product_ids_in_sitemap: set[str], today: str) -> int:
