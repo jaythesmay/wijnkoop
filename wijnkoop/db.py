@@ -465,6 +465,8 @@ def _backup(con, path, version):
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
     "run_log": [("process", "TEXT"), ("wait_until", "TEXT")],
+    "cuvee": [("manual_is_wine", "INTEGER")],  # set on the data quality page: wins over the shop
+    "wine": [("manual_colour", "TEXT")],  # set on the data quality page: wins over the shop
     "award_upload": [("log", "TEXT")],
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
@@ -514,6 +516,9 @@ def connect(path=None):
     from .pace import ensure_table as ensure_pace
 
     ensure_pace(con)
+    from .quality import ensure_tables as ensure_quality
+
+    ensure_quality(con)
     _add_later_columns(con)
     con.executescript(VIEWS)
     con.execute("PRAGMA foreign_keys = ON")

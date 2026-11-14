@@ -51,7 +51,7 @@ def _upsert_cuvee(con, p: gall.GallProduct) -> int:
              region=COALESCE(excluded.region, region),
              grapes=COALESCE(excluded.grapes, grapes),
              category=COALESCE(excluded.category, category),
-             is_wine=excluded.is_wine""",
+             is_wine=COALESCE(cuvee.manual_is_wine, excluded.is_wine)""",
         (key, p.title, producer, norm(producer) or None, p.colour, p.specs.get("country"),
          p.specs.get("region"), p.specs.get("grapes"), p.category, int(p.is_wine)),
     )
@@ -92,7 +92,7 @@ def _wine_for(con, p: gall.GallProduct, cuvee_id: int, vintage: int | None) -> i
 
 def _upsert_wine_by_id(con, p: gall.GallProduct, wine_id: int) -> int:
     con.execute(
-        """UPDATE wine SET producer=COALESCE(?, producer), colour=COALESCE(?, colour), country=COALESCE(?, country),
+        """UPDATE wine SET producer=COALESCE(?, producer), colour=COALESCE(manual_colour, ?, colour), country=COALESCE(?, country),
              region=COALESCE(?, region), grapes=COALESCE(?, grapes), style=COALESCE(?, style),
              alcohol=COALESCE(?, alcohol) WHERE id=?""",
         (p.specs.get("producer"), p.colour, p.specs.get("country"), p.specs.get("region"), p.specs.get("grapes"),
@@ -109,7 +109,7 @@ def _upsert_wine(con, p: gall.GallProduct, cuvee_id: int, vintage: int | None) -
            ON CONFLICT(norm_key) DO UPDATE SET
              cuvee_id=excluded.cuvee_id,
              producer=COALESCE(excluded.producer, producer),
-             colour=COALESCE(excluded.colour, colour),
+             colour=COALESCE(wine.manual_colour, excluded.colour, colour),
              country=COALESCE(excluded.country, country),
              region=COALESCE(excluded.region, region),
              grapes=COALESCE(excluded.grapes, grapes),
@@ -175,8 +175,23 @@ def _change_events(con, today, shop_id, offer_id, wine_id, current, p, stock):
         log_event(con, today, "back_in_stock" if stock else "out_of_stock", shop_id, offer_id, wine_id)
 
 
+def _your_fixes(con, shop_id: int, p: gall.GallProduct):
+    """What you decided on the data quality page holds when the shop is read again: the bottle
+    size of an offer, and one name for a producer the shops spell in different ways."""
+    fix = con.execute("SELECT volume_cl FROM offer_fix WHERE shop_id=? AND shop_product_id=?",
+                      (shop_id, p.product_id)).fetchone()
+    if fix and fix["volume_cl"]:
+        p.volume_cl = fix["volume_cl"]
+    producer = p.specs.get("producer")
+    if producer:
+        same = con.execute("SELECT producer FROM producer_alias WHERE from_key=?", (norm(producer),)).fetchone()
+        if same:
+            p.specs["producer"] = same["producer"]
+
+
 def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=None):
     p.volume_cl = fix_volume(p.volume_cl, p.title, p.url)  # a half bottle or magnum named in the title
+    _your_fixes(con, shop_id, p)
     vintage = _int(p.specs.get("vintage"))
     vkey = str(vintage) if vintage else "nv"
     cuvee_id = _resolve_cuvee(con, p, shop_id, matcher)

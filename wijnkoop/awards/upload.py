@@ -660,14 +660,15 @@ def _keep_file(upload_id: int, filename: str, data: bytes):
 RELINK_SETTING = "upload_relink_cuvee_id"
 
 
-def relink_uploads(con) -> int:
+def relink_uploads(con, everything: bool = False, progress=None) -> int:
     """Official results never change, but WijnKoop keeps finding new wines (new shops, new
     vintages). Check every uploaded award that is not linked yet against the wines added since
-    the last check. Returns the number of awards newly linked."""
+    the last check (everything=True: against all wines, for the data quality run).
+    Returns the number of awards newly linked; each one is noted as an 'award_found' event."""
     from .importer import Matcher
 
     row = con.execute("SELECT value FROM setting WHERE key=?", (RELINK_SETTING,)).fetchone()
-    since = int(row[0]) if row and str(row[0]).isdigit() else 0
+    since = 0 if everything else (int(row[0]) if row and str(row[0]).isdigit() else 0)
     top = con.execute("SELECT COALESCE(MAX(id), 0) FROM cuvee").fetchone()[0]
     if top <= since:
         return 0
@@ -680,13 +681,21 @@ def relink_uploads(con) -> int:
         keys = {cid: k for cid, k in _match_index(con).items() if cid > since}
         matcher = Matcher(con)
         touched = set()
-        for a in open_awards:
+        today = dt.date.today().isoformat()
+        for i, a in enumerate(open_awards, 1):
             rec = {"name": a["name_raw"], "producer": a["producer_raw"], "colour": a["colour"],
                    "vintage": a["vintage"]}
             if _link(con, a["id"], rec, matcher, keys, new_only=since):
                 found += 1
                 touched.add(a["source_url"].split(":")[1])
+                m = con.execute("SELECT wine_id, confirmed FROM award_match WHERE award_id=?", (a["id"],)).fetchone()
+                con.execute("""INSERT INTO event (happened_on, kind, wine_id, new_value, detail)
+                               VALUES (?, 'award_found', ?, ?, ?)""",
+                            (today, m["wine_id"], "linked" if m["confirmed"] else "probable",
+                             " ".join(x for x in (a["producer_raw"], a["name_raw"], str(a["vintage"] or "")) if x)))
                 con.commit()  # not holding the database during the matching of the next ones
+            if progress and i % 200 == 0:
+                progress(i, len(open_awards), found)
         for upload_id in touched:
             _count_links(con, int(upload_id))
     con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (RELINK_SETTING, str(top)))
