@@ -128,7 +128,8 @@ def files() -> dict:
 
 # ---------------------------------------------------------------- the work, from the database
 
-JOB_NAMES = {"awards": "Award check", "vivino": "Vivino ratings", "mail": "Weekly e-mail"}
+JOB_NAMES = {"awards": "Award check", "vivino": "Vivino ratings", "mail": "Weekly e-mail",
+             "quality": "Data quality checks"}
 
 
 def job_name(job: str) -> str:
@@ -211,6 +212,13 @@ def queue(con, now: dt.datetime | None = None) -> list[dict]:
     try:
         if weekly and weekly(con, now):
             checks.append(("Vivino ratings (Brave search)", "after the award check"))
+    except Exception:
+        pass
+    try:
+        from .quality import running, weekly_due
+
+        if weekly_due(con, now) and not running(con):
+            checks.append(("Data quality checks", "after the Vivino ratings"))
     except Exception:
         pass
     for what, after in checks:

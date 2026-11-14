@@ -223,10 +223,14 @@ def refresh_effective_prices(con) -> int:
     from .deals import effective_per_75cl, parse_deal
 
     changed = 0
-    for r in con.execute("""SELECT id, title, url, price, volume_cl, promotion, member_price,
-                                   effective_price_per_75cl
+    try:  # bottle sizes you set on the data quality page
+        yours = {(r[0], r[1]): r[2] for r in con.execute("SELECT shop_id, shop_product_id, volume_cl FROM offer_fix")}
+    except Exception:
+        yours = {}
+    for r in con.execute("""SELECT id, shop_id, shop_product_id, title, url, price, volume_cl, promotion,
+                                   member_price, effective_price_per_75cl
                             FROM offer WHERE is_current = 1""").fetchall():
-        volume = fix_volume(r["volume_cl"], r["title"], r["url"])
+        volume = yours.get((r["shop_id"], r["shop_product_id"])) or fix_volume(r["volume_cl"], r["title"], r["url"])
         if volume != r["volume_cl"]:
             # A half bottle or magnum stored as 75 cl: correct its size and its price history.
             con.execute("UPDATE offer SET volume_cl=?, price_per_75cl=ROUND(price * 75.0 / ?, 2) WHERE id=?",

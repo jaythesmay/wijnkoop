@@ -1,0 +1,50 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Award wines not in your shops</h1>
+<p class="lead">Every award from your uploaded results files is kept, also when none of your shops sells the wine.
+These are the wines WijnKoop keeps looking for: after every shop run it checks the new wines against this list,
+and the weekly <a href="/quality">data quality run</a> checks all wines again. When one turns up in a shop, its award
+counts and it moves to “Found in a shop” below.</p>
+
+<form method="get" action="/awards/not-sold" class="panel filters" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
+  <div><label for="q">Name</label><input type="text" id="q" name="q" value="{{ args.q }}"></div>
+  <div><label for="colour">Colour</label><select id="colour" name="colour">
+    <option value="">Any</option>{% for c, l in [('red', 'Red'), ('white', 'White'), ('rosé', 'Rosé')] %}<option value="{{ c }}"{% if args.colour == c %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></div>
+  <div><label for="competition">Competition</label><select id="competition" name="competition">
+    <option value="">Any</option>{% for c in competitions %}<option{% if args.competition == c %} selected{% endif %}>{{ c }}</option>{% endfor %}</select></div>
+  <div><label for="gold">Result</label><select id="gold" name="gold">
+    <option value="">Any</option><option value="1"{% if args.gold %} selected{% endif %}>Gold or better</option></select></div>
+  <div style="align-self:end"><button class="primary" type="submit">Show</button></div>
+</form>
+
+<p class="small muted">{{ total }} of {{ all_total }} wines (one line per wine and vintage, with all its awards), best results first.</p>
+{% if wines %}
+<div class="panel" style="overflow-x:auto"><table class="list">
+<tr><th>Wine</th><th>Awards</th></tr>
+{% for w in wines %}
+<tr>
+  <td style="word-break:break-word"><b>{{ w.name }}</b>{% if w.vintage %} {{ w.vintage }}{% endif %}
+    <div class="meta">{{ {'red': 'Red', 'white': 'White', 'rosé': 'Rosé'}.get(w.colour, '') }}{% if w.colour and w.country %} · {% endif %}{{ w.country or '' }}</div></td>
+  <td>{% for a in w.awards %}<span class="pill {{ 'v-top' if a.gold else 'v-fair' }}" style="margin:0 4px 4px 0">{{ a.short }} {{ a.year or '' }} {{ a.medal or '' }}{% if a.points %} {{ '%g'|format(a.points) }} pts{% endif %}</span>{% endfor %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% if pages > 1 %}
+{% set base = '/awards/not-sold?' ~ ({'q': args.q, 'colour': args.colour, 'competition': args.competition, 'gold': args.gold}|urlencode) %}
+<p class="small">Page {{ page }} of {{ pages }} ·
+  {% if page > 1 %}<a href="{{ base }}&page={{ page - 1 }}">previous</a>{% endif %}
+  {% if page < pages %}<a href="{{ base }}&page={{ page + 1 }}">next</a>{% endif %}</p>
+{% endif %}
+{% else %}<div class="empty">{% if all_total %}No wines match.{% else %}No award wines waiting: upload a results file on <a href="/upload">Check awards with a file</a>.{% endif %}</div>{% endif %}
+
+<h2>Found in a shop</h2>
+{% if found %}
+<div class="panel"><table class="list">
+{% for f in found %}
+<tr><td><a href="/wine/{{ f.wine_id }}">{{ f.name }}{% if f.vintage %} {{ f.vintage }}{% endif %}</a>
+  <div class="meta">for the award of “{{ f.detail }}”{% if f.new_value == 'probable' %} · probable: <a href="/quality?check=probable_award">check it</a>{% endif %}</div></td>
+  <td class="num small">{{ f.happened_on }}</td></tr>
+{% endfor %}
+</table></div>
+{% else %}<div class="empty">None found yet.</div>{% endif %}
+{% endblock %}

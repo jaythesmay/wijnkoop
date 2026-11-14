@@ -1,0 +1,145 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Data quality</h1>
+<p class="lead">WijnKoop goes through the database once a week and lists what looks wrong: the same wine twice,
+one wine that is really two, award links to check, colours, prices and producer names. For each one it suggests
+what to do. You choose, for one at a time or for many at once. What you decide holds when the shops are read again.</p>
+
+{% if said %}<div class="hint ok" role="status">{% if said == 'running' %}The checks are running. This page shows the result when they are done (reload in a few minutes).{% elif said == 'already' %}The checks are running already.{% elif said.startswith('done') %}Done: {{ said[5:] }}. Scores are worked out again in the background.{% elif said.startswith('reopened') %}Back on the list: {{ said[9:] }}.{% endif %}</div>{% endif %}
+
+<div class="panel" style="margin-bottom:18px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+  <div class="small">
+    {% if running %}<span class="pill v-top">running</span> since {{ running.started[11:16] }}: {{ running.note }}
+    {% elif last_run %}Last checked {{ last_run.started[:16].replace('T', ' ') }}{% if last_run.note %} · {{ last_run.note }}{% endif %}
+    {% else %}Not checked yet.{% endif %}
+    <div class="meta">The run also looks for the wines of your uploaded results files in the shops: <a href="/awards/not-sold">award wines not in your shops</a>.</div>
+  </div>
+  <form method="post" action="/quality">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+    <input type="hidden" name="run" value="1">
+    <button type="submit" class="primary"{% if running %} disabled{% endif %}>Run the checks now</button>
+  </form>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:18px">
+  <a class="panel" href="/quality?state={{ state }}" style="text-decoration:none;{% if not check %}border-color:var(--accent){% endif %}">
+    <b>Everything</b><div class="meta">{{ open_total }} to look at</div></a>
+  {% for c in checks %}
+  <a class="panel" href="/quality?check={{ c.code }}&state={{ state }}" style="text-decoration:none;{% if check == c.code %}border-color:var(--accent){% endif %}">
+    <b>{{ c.title }}</b><div class="meta">{% if c.open %}{{ c.open }} to look at{% else %}nothing to look at{% endif %}</div></a>
+  {% endfor %}
+</div>
+
+{% set here = checks|selectattr('code', 'equalto', check)|first if check else None %}
+{% if here %}<p>{{ here.explain }}</p>{% endif %}
+
+<p class="small">
+  {% for code, label in [('open', 'To look at'), ('done', 'Done'), ('kept', 'Kept as it is'), ('gone', 'Solved by themselves')] %}
+  {% if state == code %}<b>{{ label }}</b>{% else %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ code }}">{{ label }}</a>{% endif %}{% if not loop.last %} · {% endif %}
+  {% endfor %}
+</p>
+
+{% if issues %}
+{% if state == 'open' %}
+<form method="post" action="/quality" id="bulk" class="panel" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="ids" id="bulk-ids" value="">
+  {% if check %}<input type="hidden" name="check" value="{{ check }}">{% endif %}
+  <label class="small" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="all"> all on this page</label>
+  <select name="act" id="bulk-act" style="width:auto;max-width:100%">
+    <option value="suggested">What WijnKoop suggests for each</option>
+    {% if here %}{% for code, label in here.actions %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+    {% else %}<option value="keep">Fine as it is / keep</option>{% endif %}
+  </select>
+  <button type="submit" id="bulk-go" disabled>Apply to the selected (<span id="bulk-n">0</span>)</button>
+  {% if check and total > issues|length %}
+  <button type="submit" name="all_of" value="{{ check }}" class="small" title="Every open one of this check, also on the next pages">Apply to all {{ total }}</button>
+  {% endif %}
+</form>
+{% endif %}
+
+<style>
+@media (max-width: 640px) {
+  #issues tr:first-child { display: none; }
+  #issues tr { display: grid; grid-template-columns: 1fr; border-bottom: 1px solid var(--line); padding: 6px 0; }
+  #issues.picks tr { grid-template-columns: 28px minmax(0, 1fr); }
+  #issues td { display: block; border: none; padding: 4px 6px; }
+  #issues td:last-child { min-width: 0 !important; }
+  #issues.picks td:last-child { grid-column: 2; }
+}
+</style>
+<div class="panel" style="overflow-x:auto"><table class="list{% if state == 'open' %} picks{% endif %}" id="issues">
+<tr>{% if state == 'open' %}<th></th>{% endif %}<th>What</th><th>{{ 'What to do' if state == 'open' else 'What happened' }}</th></tr>
+{% for i in issues %}
+<tr id="issue-{{ i.id }}">
+  {% if state == 'open' %}<td style="width:28px"><input type="checkbox" class="pick" value="{{ i.id }}" aria-label="Select"></td>{% endif %}
+  <td style="word-break:break-word"><b>{{ i.title }}</b>
+    <div class="meta">{% if not check %}{{ i.check_title }} · {% endif %}{{ i.detail }}</div>
+    {% if i.links %}<div class="meta">{% for label, url in i.links %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+  </td>
+  <td style="min-width:220px">
+    {% if state == 'open' %}
+    <form method="post" action="/quality" class="one" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="ids" value="{{ i.id }}">
+      {% if check %}<input type="hidden" name="check" value="{{ check }}">{% endif %}
+      <select name="act" style="width:auto;max-width:100%;font-size:14px;padding:6px 8px">
+        {% for code, label in i.actions %}<option value="{{ code }}"{% if code == i.suggestion %} selected{% endif %}>{{ label }}{% if code == i.suggestion %} (suggested){% endif %}</option>{% endfor %}
+      </select>
+      <button type="submit">Do it</button>
+    </form>
+    {% else %}
+    <span class="small">{{ i.resolution_label or '' }}</span><div class="meta">{{ (i.resolved_on or '')[:16].replace('T', ' ') }}</div>
+    {% if state == 'kept' %}
+    <form method="post" action="/quality" style="margin-top:4px">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="reopen" value="1"><input type="hidden" name="ids" value="{{ i.id }}">
+      <input type="hidden" name="state" value="kept">{% if check %}<input type="hidden" name="check" value="{{ check }}">{% endif %}
+      <button type="submit" class="small">Look again</button>
+    </form>
+    {% endif %}
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table></div>
+{% if pages > 1 %}
+<p class="small">Page {{ page }} of {{ pages }} ({{ total }}) ·
+  {% if page > 1 %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}&page={{ page - 1 }}">previous</a>{% endif %}
+  {% if page < pages %}<a href="/quality?{% if check %}check={{ check }}&{% endif %}state={{ state }}&page={{ page + 1 }}">next</a>{% endif %}</p>
+{% endif %}
+{% else %}
+<div class="empty">{% if state == 'open' %}{% if last_run %}Nothing to look at here.{% else %}Press “Run the checks now” to go through the database.{% endif %}{% else %}Nothing here yet.{% endif %}</div>
+{% endif %}
+
+<script>
+(() => {
+  const picks = () => [...document.querySelectorAll(".pick:checked")].map(c => c.value);
+  const sync = () => {
+    const n = picks().length, go = document.getElementById("bulk-go");
+    if (!go) return;
+    document.getElementById("bulk-n").textContent = n;
+    document.getElementById("bulk-ids").value = picks().join(",");
+    go.disabled = n === 0;
+  };
+  document.querySelectorAll(".pick").forEach(c => c.addEventListener("change", sync));
+  const all = document.getElementById("all");
+  if (all) all.addEventListener("change", () => { document.querySelectorAll(".pick").forEach(c => c.checked = all.checked); sync(); });
+  // One at a time: stay on the page, the row goes away
+  document.querySelectorAll("form.one").forEach(f => f.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const btn = f.querySelector("button"); btn.disabled = true; btn.textContent = "…";
+    try {
+      const r = await fetch("/quality", {method: "POST", body: new URLSearchParams(new FormData(f)),
+                                         credentials: "same-origin", headers: {"x-wk-quick": "1"}});
+      if (!r.ok) throw new Error(r.status === 403 ? "reload the page (F5)" : r.status);
+      const d = await r.json();
+      const row = f.closest("tr");
+      row.querySelector("td:last-child").innerHTML = d.done ? '<span class="pill v-good">done</span>' : '<span class="muted">already gone</span>';
+      const pick = row.querySelector(".pick"); if (pick) { pick.checked = false; pick.disabled = true; sync(); }
+      row.style.opacity = .55;
+    } catch (e) { btn.disabled = false; btn.textContent = "Not done (" + e.message + "): try again"; }
+  }));
+})();
+</script>
+{% endblock %}
