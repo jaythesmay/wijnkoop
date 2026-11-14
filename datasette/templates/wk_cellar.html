@@ -1,0 +1,23 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Cellar</h1>
+<p class="lead">{% if items %}{{ bottles }} bottle{{ 's' if bottles != 1 }}{% if value %}, bought for {{ value|money }} in all{% endif %}. What to drink first is at the top.{% else %}What you bought, and until when to drink it.{% endif %}</p>
+{% if items %}
+<div class="panel">
+{% for c in items %}
+<form method="post" action="/cellar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="cellar_id" value="{{ c.id }}"><input type="hidden" name="next" value="/cellar">
+  <div style="flex:1;min-width:180px"><a href="/wine/{{ c.wine_id }}">{{ c.wine }}</a>
+    <div class="small muted">{{ [c.colour|capitalize if c.colour, ('score ' ~ (c.score|score)) if c.score, ('★' * c.rating) if c.rating, ('bought ' ~ c.bought_on) if c.bought_on, (c.price|money ~ ' a bottle') if c.price, c.note]|select|join(' · ') }}</div></div>
+  <span class="small">{% if c.drink_until %}{% if c.drink_soon %}<span class="pill v-fair">drink by {{ c.drink_until }}</span>{% else %}until {{ c.drink_until }}{% endif %}{% endif %}</span>
+  <input name="bottles" inputmode="numeric" value="{{ c.bottles }}" style="width:56px" aria-label="Bottles">
+  <button type="submit">Save</button>
+</form>
+{% endfor %}
+<p class="small muted">Set the number of bottles to 0 to remove a wine.</p>
+</div>
+{% else %}
+<div class="empty">Nothing in your cellar yet. On a wine's page, open “Yours” and tap Add to cellar.</div>
+{% endif %}
+{% endblock %}

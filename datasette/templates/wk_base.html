@@ -147,6 +147,7 @@ footer a { color: var(--muted); }
     <a href="/find" class="{{ 'on' if p == '/find' }}">Find</a>
     <a href="/week" class="{{ 'on' if p == '/week' }}">Week</a>
     <a href="/watchlist" class="{{ 'on' if p == '/watchlist' }}">Watchlist<span class="count" id="nav-watch"{% if not nav.watched %} hidden{% endif %}>{{ nav.watched }}</span></a>
+    <a href="/cellar" class="{{ 'on' if p == '/cellar' }}">Cellar</a>
     <a href="/order" class="{{ 'on' if p == '/order' }}">Order<span class="count" id="nav-order"{% if not nav.order_bottles %} hidden{% endif %}>{{ nav.order_bottles }}</span></a>
   </nav>
 </header>

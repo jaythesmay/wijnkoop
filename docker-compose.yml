@@ -19,3 +19,5 @@ services:
       # Optional: a password for the app (needed only if it can be reached from outside Tailscale).
       # WIJNKOOP_USER: "wijnkoop"
       # WIJNKOOP_PASSWORD: "choose-one"
+      # Optional: push messages for your target prices (a free ntfy.sh topic only you know).
+      # WIJNKOOP_NTFY_URL: "https://ntfy.sh/wijnkoop-choose-something-secret"

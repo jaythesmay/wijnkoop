@@ -4,6 +4,7 @@ Pages: / (home), /find, /search, /wine/<id>, /week, /watchlist, /order, /how, /a
 /update (read shops now).
 The data comes from wijnkoop/ui.py; the HTML from datasette/templates/wk_*.html.
 """
+import asyncio
 import csv
 import io
 import os
@@ -15,7 +16,7 @@ from datasette import hookimpl
 from datasette.utils.asgi import Response
 from markupsafe import Markup
 
-from wijnkoop import award_wines, jobs, quality, ui
+from wijnkoop import award_wines, jobs, personal, quality, ui
 from wijnkoop.bottles import bottle_size
 from wijnkoop.awards import upload as award_upload
 from wijnkoop.db import BUSY_TIMEOUT
@@ -30,6 +31,25 @@ async def _read(datasette, fn, *args):
 
 async def _write(datasette, fn, *args):
     return await datasette.get_database(DB).execute_write_fn(lambda conn: fn(conn, *args), block=True)
+
+
+async def _background(datasette, fn, *args):
+    """Long work that writes (an upload, deleting one): in a thread of its own with its own connection,
+    not on Datasette's single write thread, so Save, Watch and Read now stay quick meanwhile."""
+    from pathlib import Path
+
+    from wijnkoop import db as wdb
+
+    path = Path(datasette.get_database(DB).path)
+
+    def run():
+        con = wdb.connect(path)
+        try:
+            return fn(con, *args)
+        finally:
+            con.close()
+
+    return await asyncio.to_thread(run)
 
 
 async def _page(datasette, request, template, title, **ctx):
@@ -82,6 +102,10 @@ async def wine(datasette, request):
     if not data:
         return Response.html("<p>This wine is not known. <a href='/'>Home</a></p>", status=404)
     w = data["wine"]
+    data["mine"] = await _read(datasette, personal.mine, wine_id)
+    data["in_cellar"] = await _read(datasette, personal.in_cellar, wine_id)
+    data["target"] = await _read(datasette, lambda c, i: (c.execute(
+        "SELECT target_price FROM watch WHERE wine_id=?", (i,)).fetchone() or [None])[0], wine_id)
     return await _page(datasette, request, "wk_wine.html", f"{w['name']} {w['vintage'] or ''}".strip(), **data)
 
 
@@ -92,7 +116,41 @@ async def week(datasette, request):
 
 async def watchlist(datasette, request):
     cards = await _read(datasette, ui.watchlist)
-    return await _page(datasette, request, "wk_watchlist.html", "Watchlist", cards=cards)
+    targets = await _read(datasette, personal.watched)
+    alerts = await _read(datasette, personal.recent_alerts, 30)
+    return await _page(datasette, request, "wk_watchlist.html", "Watchlist", cards=cards, targets=targets,
+                       alerts=alerts, push=bool(os.environ.get("WIJNKOOP_NTFY_URL")))
+
+
+async def watch_target(datasette, request):
+    if request.method != "POST":
+        return Response.redirect("/watchlist")
+    post = await request.post_vars()
+    await _write(datasette, personal.set_target, int(post["wine_id"]), post.get("target"))
+    return Response.redirect(_next(post, "/watchlist"))
+
+
+async def mine(datasette, request):
+    """Your own rating and note for a wine."""
+    if request.method != "POST":
+        return Response.redirect("/")
+    post = await request.post_vars()
+    wine_id = int(post["wine_id"])
+    await _write(datasette, personal.set_mine, wine_id, post.get("rating"), post.get("note"))
+    return Response.redirect(_next(post, f"/wine/{wine_id}"))
+
+
+async def cellar(datasette, request):
+    if request.method == "POST":
+        post = await request.post_vars()
+        if post.get("cellar_id"):
+            await _write(datasette, personal.set_bottles, int(post["cellar_id"]), post.get("bottles"))
+        elif post.get("wine_id"):
+            await _write(datasette, personal.add_to_cellar, int(post["wine_id"]), post.get("bottles"),
+                         post.get("price"), post.get("drink_until"), post.get("note"))
+        return Response.redirect(_next(post, "/cellar"))
+    data = await _read(datasette, personal.cellar)
+    return await _page(datasette, request, "wk_cellar.html", "Cellar", **data)
 
 
 async def awards(datasette, request):
@@ -179,7 +237,7 @@ async def upload(datasette, request):
             UPLOAD_PROGRESS.pop(job, None)
             return Response.json({"error": f"This file is larger than {MAX_UPLOAD // 1_000_000} MB."}, status=413)
         try:
-            report = await _write(datasette, award_upload.import_upload, filename, data, competition,
+            report = await _background(datasette, award_upload.import_upload, filename, data, competition,
                                   int(year) if year.isdigit() else None, None, progress)
         except Exception as e:  # unreadable file: say so on the page instead of a crash
             UPLOAD_PROGRESS.pop(job, None)
@@ -201,7 +259,7 @@ async def upload_report(datasette, request):
         post = await request.post_vars()
         if post.get("verdict") in ("same", "other") and post.get("award", "").isdigit() and post.get("wine", "").isdigit():
             # Saved right away; the scores follow in the background, so the page answers at once.
-            hit = await _write(datasette, award_upload.judge_match, upload_id, int(post["award"]), int(post["wine"]),
+            hit = await _background(datasette, award_upload.judge_match, upload_id, int(post["award"]), int(post["wine"]),
                                post["verdict"] == "same", False)
             if hit:
                 _rescore_soon()
@@ -209,7 +267,7 @@ async def upload_report(datasette, request):
                 return Response.json({"saved": hit, "verdict": post["verdict"]})
             return Response.redirect(f"/upload/{upload_id}#a{post['award']}")
         if post.get("delete"):
-            await _write(datasette, award_upload.delete_upload, upload_id)
+            await _background(datasette, award_upload.delete_upload, upload_id)
         return Response.redirect("/upload")
     report = await _read(datasette, award_upload.upload_report, upload_id)
     if not report:
@@ -246,7 +304,7 @@ async def upload_check(datasette, request):
         post = await request.post_vars()
         hit = False
         if post.get("verdict") in ("same", "other") and post.get("award", "").isdigit() and post.get("wine", "").isdigit():
-            hit = await _write(datasette, award_upload.judge_match, None, int(post["award"]), int(post["wine"]),
+            hit = await _background(datasette, award_upload.judge_match, None, int(post["award"]), int(post["wine"]),
                                post["verdict"] == "same", False)
             if hit:
                 _rescore_soon()
@@ -480,6 +538,9 @@ def register_routes():
         (r"^/wine/(?P<wine_id>\d+)$", wine),
         (r"^/week$", week),
         (r"^/watchlist$", watchlist),
+        (r"^/watch/target$", watch_target),
+        (r"^/mine$", mine),
+        (r"^/cellar$", cellar),
         (r"^/awards$", awards),
         (r"^/awards/not-sold$", awards_not_sold),
         (r"^/quality$", quality_page),

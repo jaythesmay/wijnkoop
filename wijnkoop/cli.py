@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 
-from . import backup, config, db, jobs, quality, scores, vivino
+from . import backup, config, db, jobs, personal, quality, scores, vivino
 from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_shop, fetch_page, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
@@ -155,6 +155,7 @@ def cmd_scheduler(args):
                 continue
             # Once, after the shops are read (or at most an hour after new prices came in).
             if scores.recompute_if_due(con, busy=bool(jobs.running_shops(con))):
+                personal.run_alerts(con)  # watched wines at or below your target price
                 continue
             if backup.run_if_due(con, now):
                 continue
