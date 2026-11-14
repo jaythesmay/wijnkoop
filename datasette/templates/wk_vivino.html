@@ -1,0 +1,59 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>Vivino and the awards</h1>
+<p class="lead">The Vivino rating of the public next to the score from competitions and critics, for wines of
+€{{ '%g'|format(low) }}–{{ '%g'|format(high) }} a bottle (per 75 cl) in your shops. WijnKoop looks up
+{{ status.limit }} wines a month through Tavily search (never vivino.com itself), the €{{ '%g'|format(low) }}–{{ '%g'|format(high) }}
+wines with awards first, then the ones without.</p>
+
+<form method="get" action="/vivino" class="panel filters" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
+  <div><label for="from">From €</label><input type="number" step="0.5" min="0" id="from" name="from" value="{{ '%g'|format(low) }}"></div>
+  <div><label for="to">To €</label><input type="number" step="0.5" min="0" id="to" name="to" value="{{ '%g'|format(high) }}"></div>
+  <div style="align-self:end"><button class="primary" type="submit">Show</button></div>
+</form>
+
+<p class="small muted">{{ rated }} of {{ looked_up }} wines looked up have a Vivino rating. Searches in {{ status.month }}: {{ status.used }} of {{ status.limit }};
+{{ status.waiting }} wine{{ 's' if status.waiting != 1 }} on sale still to look up. <a href="/update#vivino">Look up now</a></p>
+
+<h2>The public likes them, no awards yet</h2>
+<p class="small muted">Wines without any award, best Vivino rating first. A rating from few people says little: see the number of ratings.</p>
+{% if no_awards %}
+<div class="panel" style="overflow-x:auto"><table class="list">
+<tr><th>Wine</th><th class="num">Price</th><th class="num">Vivino</th></tr>
+{% for r in no_awards %}
+<tr><td style="word-break:break-word"><a href="/wine/{{ r.wine_id }}">{{ r.name }}{% if r.vintage %} {{ r.vintage }}{% endif %}</a>
+  <div class="meta">{{ {'red': 'Red', 'white': 'White', 'rosé': 'Rosé'}.get(r.colour, '') }}{% if r.how and r.how.startswith('quoted') %} · {{ r.how }}{% endif %}</div></td>
+  <td class="num">{{ r.price|money }}</td>
+  <td class="num"><b>{{ '%.1f'|format(r.rating) }} ★</b><div class="meta">{% if r.ratings_count %}{{ r.ratings_count }} ratings{% else %}number of ratings unknown{% endif %}</div></td></tr>
+{% endfor %}
+</table></div>
+{% else %}<p class="muted">None yet.</p>{% endif %}
+
+<h2>Awards and Vivino side by side</h2>
+<p class="small muted">Wines with awards, best award score first. Vivino counts as 50 + 10 × the stars (4.0 is 90); the difference shows where the public and the judges disagree.</p>
+{% if both %}
+<div class="panel" style="overflow-x:auto"><table class="list">
+<tr><th>Wine</th><th class="num">Price</th><th class="num">Awards</th><th class="num">Vivino</th></tr>
+{% for r in both %}
+<tr><td style="word-break:break-word"><a href="/wine/{{ r.wine_id }}">{{ r.name }}{% if r.vintage %} {{ r.vintage }}{% endif %}</a>
+  <div class="meta">{{ r.best_award or '' }}</div></td>
+  <td class="num">{{ r.price|money }}</td>
+  <td class="num"><b>{{ '%.1f'|format(r.overall) if r.overall else '–' }}</b></td>
+  <td class="num"><b>{{ '%.1f'|format(r.rating) }} ★</b> ({{ '%g'|format(r.points) }})<div class="meta">{% if r.gap is not none %}{{ '%+g'|format(r.gap) }} vs awards{% endif %}{% if r.ratings_count %} · {{ r.ratings_count }} ratings{% endif %}</div></td></tr>
+{% endfor %}
+</table></div>
+{% else %}<p class="muted">None yet.</p>{% endif %}
+
+<h2>Looked up without a rating</h2>
+<p class="small muted">Why: {% for why, n in why_not.items() if n %}{{ n }} {{ why }}{% if not loop.last %} · {% endif %}{% else %}nothing missed yet{% endfor %}.
+These are tried again after a month. The latest ones, with what the search brought back:</p>
+{% if misses %}
+<div class="panel" style="overflow-x:auto"><table class="list">
+<tr><th>Wine</th><th>What the search found</th></tr>
+{% for m in misses %}
+<tr><td style="word-break:break-word"><a href="/wine/{{ m.wine_id }}">{{ m.wine }}</a><div class="meta">{{ m.checked_on }} · {{ m.how }}</div></td>
+  <td style="word-break:break-word" class="small">{{ m.snippet or '–' }}</td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+{% endblock %}

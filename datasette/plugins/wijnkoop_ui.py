@@ -491,6 +491,19 @@ async def quality_page(datasette, request):
     return await _page(datasette, request, "wk_quality.html", "Data quality", said=request.args.get("said"), **data)
 
 
+async def vivino_page(datasette, request):
+    a = request.args
+
+    def euros(key):
+        try:
+            return float((a.get(key) or "").replace(",", "."))
+        except ValueError:
+            return None
+    data = await _read(datasette, vivino.cross_reference, euros("from"), euros("to"))
+    status = await _read(datasette, vivino.status)
+    return await _page(datasette, request, "wk_vivino.html", "Vivino and the awards", status=status, **data)
+
+
 async def awards_not_sold(datasette, request):
     a = request.args
     page = a.get("page") or "1"
@@ -593,6 +606,7 @@ def register_routes():
         (r"^/cellar$", cellar),
         (r"^/awards$", awards),
         (r"^/awards/not-sold$", awards_not_sold),
+        (r"^/vivino$", vivino_page),
         (r"^/quality$", quality_page),
         (r"^/how$", how),
         (r"^/upload$", upload),
