@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     GIT_SHA=${GIT_SHA}
 
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --no-create-home --home-dir /app --shell /usr/sbin/nologin wijnkoop
 
 WORKDIR /app
 COPY requirements.txt .

@@ -526,6 +526,46 @@ CREATE INDEX IF NOT EXISTS ix_price_history_seen ON price_history(seen_on);
 """
 
 
+PRICE_FIELDS = ("price", "promotion", "was_price", "effective_price_per_75cl", "in_stock")
+
+
+def record_price(con, offer_id: int, day: str, price, promotion, was_price, effective, in_stock) -> bool:
+    """Note the offer's price of this day in price_history, but only when something changed since
+    the line before: an unchanged price is carried by offer.last_seen (scores.expand gives the
+    weekly series back). Returns whether a line was written."""
+    values = (price, promotion, was_price, effective, in_stock)
+    prev = con.execute(f"SELECT seen_on, {', '.join(PRICE_FIELDS)} FROM price_history "
+                       "WHERE offer_id=? AND seen_on <= ? ORDER BY seen_on DESC LIMIT 1", (offer_id, day)).fetchone()
+    if prev and prev[0] < day and tuple(prev[1:]) == values:
+        return False
+    con.execute(
+        """INSERT INTO price_history (offer_id, seen_on, price, promotion, was_price, effective_price_per_75cl,
+                                      in_stock)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(offer_id, seen_on) DO UPDATE SET price=excluded.price, promotion=excluded.promotion,
+             was_price=excluded.was_price, effective_price_per_75cl=excluded.effective_price_per_75cl,
+             in_stock=excluded.in_stock""", (offer_id, day, *values))
+    return True
+
+
+def compact_price_history(con) -> int:
+    """Once: remove the weekly lines that repeat the line before (same price, promotion, stock).
+    Databases from before November 2026 kept a line every week; this makes them many times smaller."""
+    if con.execute("SELECT 1 FROM setting WHERE key='price_history_compacted'").fetchone():
+        return 0
+    same = " AND ".join(f"{f} IS prev_{f}" for f in PRICE_FIELDS)
+    lags = ", ".join(f"LAG({f}) OVER w AS prev_{f}" for f in PRICE_FIELDS)
+    n = con.execute(f"""DELETE FROM price_history WHERE id IN (
+                          SELECT id FROM (SELECT id, {', '.join(PRICE_FIELDS)}, LAG(id) OVER w AS prev_id, {lags}
+                                          FROM price_history WINDOW w AS (PARTITION BY offer_id ORDER BY seen_on))
+                          WHERE prev_id IS NOT NULL AND {same})""").rowcount
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('price_history_compacted', date('now'))")
+    con.commit()
+    if n > 10000:
+        con.execute("VACUUM")  # give the space back to the NAS (once)
+    return n
+
+
 def tune(con) -> None:
     """Settings per connection. In WAL mode synchronous=NORMAL is safe (a power cut can lose the
     last moments, never corrupt the file) and saves a disk flush for every wine a run saves, so the
@@ -553,6 +593,47 @@ def connect(path=None):
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode = WAL")
     tune(con)
+    if _up_to_date(con):
+        # The schema, views and reference data are what this code expects: nothing to write. (Before,
+        # every connection rewrote them, which needs the write lock and could wait minutes for a run.)
+        con.execute("PRAGMA foreign_keys = ON")
+        return con
+    migrate(con, path)
+    return con
+
+
+_STAMP = None
+
+
+def schema_stamp() -> str:
+    """A fingerprint of the code that shapes the database (tables, views, reference data)."""
+    global _STAMP
+    if _STAMP is None:
+        import hashlib
+        from pathlib import Path
+
+        here = Path(__file__).parent
+        h = hashlib.sha1()
+        for name in ("db.py", "reference.py", "vivino.py", "pace.py", "quality.py", "normalize.py"):
+            f = here / name
+            if f.exists():
+                h.update(f.read_bytes())
+        _STAMP = h.hexdigest()[:16]
+    return _STAMP
+
+
+def _up_to_date(con) -> bool:
+    try:
+        row = con.execute("SELECT value FROM setting WHERE key='schema_stamp'").fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(row) and row[0] == schema_stamp()
+
+
+def migrate(con, path=None):
+    """Create or upgrade the tables, views and reference data. Runs once after an update (the
+    container start does it with "wijnkoop init"); every later connection sees the stamp and skips it."""
+    path = path or DB_PATH
     version = con.execute("PRAGMA user_version").fetchone()[0]
     if version < SCHEMA_VERSION:
         has_offer = con.execute(
@@ -586,5 +667,7 @@ def connect(path=None):
     from .reference import seed
 
     seed(con)
+    compact_price_history(con)
+    con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('schema_stamp', ?)", (schema_stamp(),))
     con.commit()
     return con

@@ -83,8 +83,8 @@ def unchanged(con, shop_id: int, products, lastmod: dict[str, str]) -> set[str]:
 
 
 def carry_forward(con, shop_id: int, pids: set[str], today: str) -> int:
-    """The unchanged wines count as seen today, with the price they had: last_seen moves on and the
-    price history gets today's line, as if the page had been read."""
+    """The unchanged wines count as seen today, with the price they had: last_seen moves on, which
+    also carries their price in the price history (it keeps a line only when something changed)."""
     if not pids:
         return 0
     n = 0
@@ -95,12 +95,7 @@ def carry_forward(con, shop_id: int, pids: set[str], today: str) -> int:
             con.execute("UPDATE skipped_page SET seen_on=? WHERE shop_id=? AND shop_product_id=?", (today, shop_id, pid))
             continue
         con.execute("UPDATE offer SET last_seen=?, gone_since=NULL WHERE id=?", (today, row["id"]))
-        con.execute(
-            """INSERT INTO price_history (offer_id, seen_on, price, promotion, was_price, effective_price_per_75cl,
-                                          in_stock)
-               VALUES (?,?,?,?,?,?,?) ON CONFLICT(offer_id, seen_on) DO NOTHING""",
-            (row["id"], today, row["price"], row["promotion"], row["was_price"], row["effective_price_per_75cl"],
-             row["in_stock_online"]))
+        # Unchanged: nothing new for the price history (db.record_price writes only changes).
         n += 1
     con.commit()
     return n

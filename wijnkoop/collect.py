@@ -259,15 +259,7 @@ def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=Non
         if current["vintage_checked"]:
             _change_events(con, today, shop_id, offer_id, wine_id, current, p, stock)
 
-    con.execute(
-        """INSERT INTO price_history (offer_id, seen_on, price, promotion, was_price, effective_price_per_75cl,
-                                      in_stock)
-           VALUES (?,?,?,?,?,?,?)
-           ON CONFLICT(offer_id, seen_on) DO UPDATE SET price=excluded.price, promotion=excluded.promotion,
-             was_price=excluded.was_price, effective_price_per_75cl=excluded.effective_price_per_75cl,
-             in_stock=excluded.in_stock""",
-        (offer_id, today, p.price, p.promotion, p.was_price, effective, stock),
-    )
+    db.record_price(con, offer_id, today, p.price, p.promotion, p.was_price, effective, stock)
     _save_awards(con, p, wine_id, offer_id, shop_id, today)
     _wine_name(con, wine_id, cuvee_id)
     return offer_id

@@ -1,6 +1,15 @@
 #!/bin/sh
 # Starts the web screen and the weekly scheduler side by side.
 set -e
+# Run as the plain user "wijnkoop", not as root: the data folder is handed to that user once.
+# Set WIJNKOOP_RUN_AS_ROOT=1 in docker-compose if the NAS does not allow that.
+DATA="${WIJNKOOP_DATA:-/data}"
+if [ "$(id -u)" = "0" ] && [ -z "$WIJNKOOP_RUN_AS_ROOT" ] && command -v setpriv >/dev/null && id wijnkoop >/dev/null 2>&1; then
+  if chown -R wijnkoop:wijnkoop "$DATA" 2>/dev/null; then
+    exec setpriv --reuid=wijnkoop --regid=wijnkoop --init-groups "$0" "$@"
+  fi
+  echo "Could not hand $DATA to the user wijnkoop; running as root" >&2
+fi
 # The web screens import the wijnkoop package from here.
 export PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
 python -m wijnkoop init

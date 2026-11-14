@@ -91,6 +91,16 @@ and open `http://<nas tailscale name>:8001`.
   `/data/wijnkoop.db`.
 - Works out scores, value and deals once after the shops are read (at most an hour after new prices
   come in while other shops are still being read), not after every shop.
+- Keeps the price history as changes only (a line when price, promotion or stock changed); older weekly lines
+  are folded together once after the update, which makes the database many times smaller.
+- The search box uses a search index (SQLite FTS5 with three-letter pieces), so a typo still finds the wine.
+- Upgrades the database only once after an update, not on every connection.
+- Runs as the plain user `wijnkoop`, not as root (the data folder is handed to that user at start;
+  `WIJNKOOP_RUN_AS_ROOT=1` if the NAS does not allow that). Uploads are at most 25 MB
+  (`WIJNKOOP_MAX_UPLOAD_MB`). With `WIJNKOOP_PASSWORD` set, the app asks for a password.
+- The log is also kept in `/data/logs/wijnkoop.log` (5 files of 1 MB at most).
+- Every image is also tagged with its date and code (`ghcr.io/<owner>/wijnkoop:20261114-abc1234`), so you can go
+  back to an earlier version in Container Station.
 - The container uses at most 2 processor cores and 1.5 GB of memory (`cpus` and `mem_limit` in
   `docker-compose.yml`).
 - Award results: IWC (with points) and Concours Mondial are read automatically, weekly in
