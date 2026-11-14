@@ -93,6 +93,8 @@ LOWEST_COUNTED = None
 POINTS_RE = re.compile(r"(\d{2,3}(?:[.,]\d)?)\s*(?:/\s*100|punten|points|pts|ptn|p\b|pt\b)")
 RANGE_RE = re.compile(r"\b(\d{2,3})\s*[-–]\s*(\d{2,3})\b(?!\s*[-–/]?\s*(?:19|20)\d{2})")
 POINTS20_RE = re.compile(r"(\d{1,2}(?:[.,]\d)?)\s*/\s*20")
+# "95 van de 100 punten", "95 out of 100": the score, written as 95/100 so the 100 of the scale is not read
+OUT_OF_100 = re.compile(r"(?<![\d.,])(\d{2}(?:[.,]\d)?)\s*(?:van\s+de|van|uit|out\s+of|op|of)\s+(?:de\s+)?100(?![\d.,])")
 YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
 
 # Delivery costs per shop.
@@ -146,7 +148,11 @@ def find_competition(text: str):
 # A critic's score inside running text: "Robert Parker 95/100", "Wine Advocate(91-93)/100",
 # "93 punten James Suckling", "Jancis Robinson 17/20".
 _SCORE_IN_TEXT = re.compile(
-    r"\(?(?<![\d.,])(\d{2,3}(?:[.,]\d)?)(?:\s*[-–]\s*(\d{2,3}))?\)?\s*"
+    # "95 van de 100 punten", "95 out of 100 points", "95 uit 100": the score is the first number,
+    # never the 100 of the scale (which also reads as "100 punten")
+    r"(?<![\d.,])(\d{2}(?:[.,]\d)?)\s*(?:van\s+de|van|uit|out\s+of|op|of)\s+(?:de\s+)?100(?![\d.,])"
+    r"(?:\s*(?:punten|points|pts|ptn)\b)?"
+    r"|\(?(?<![\d.,])(\d{2,3}(?:[.,]\d)?)(?:\s*[-–]\s*(\d{2,3}))?\)?\s*"
     r"(?:/\s*100(?!\d)|punten\b|points\b|pts\b|ptn\b)"
     r"|(?<![\d.,])(\d{1,2}(?:[.,]\d)?)\s*/\s*20(?!\d)")
 
@@ -178,14 +184,19 @@ def awards_in_text(text: str | None) -> list[tuple[str, str]]:
         critic = _critic_near(plain, m.start(), m.end())
         if not critic:
             continue
-        if m.group(3):
-            result = f"{m.group(3).replace(',', '.')}/20"
+        if m.group(1):  # "95 van de 100 punten"
+            score = float(m.group(1).replace(",", "."))
+            if 50 <= score <= 100 and (critic, f"{score:g} punten") not in out:
+                out.append((critic, f"{score:g} punten"))
+            continue
+        if m.group(4):
+            result = f"{m.group(4).replace(',', '.')}/20"
         else:
-            low = float(m.group(1).replace(",", "."))
-            high = float(m.group(2)) if m.group(2) else None
+            low = float(m.group(2).replace(",", "."))
+            high = float(m.group(3)) if m.group(3) else None
             if not 50 <= low <= 100 or (high and not low < high <= 100):
                 continue
-            result = f"{m.group(1)}-{m.group(2)}/100" if high else f"{low:g} punten"
+            result = f"{m.group(2)}-{m.group(3)}/100" if high else f"{low:g} punten"
         if (critic, result) not in out:
             out.append((critic, result))
     return out
@@ -195,7 +206,7 @@ def parse_award_text(source: str, result: str = "") -> dict | None:
     """Understand one award, e.g. ("International Wine and Spirit competition 2024",
     "Zilver met 90 punten") or ("93 punten James Suckling", "")."""
     text = f"{source} {result}".strip()
-    plain = _plain(text)
+    plain = OUT_OF_100.sub(r"\1/100", _plain(text))
     comp = find_competition(text)
     # The competition's own name can hold a medal word ("Berliner Wein Trophy"): leave it out.
     medal_text = plain

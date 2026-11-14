@@ -376,3 +376,68 @@ def test_same_award_on_two_shop_pages_counts_once(tmp_path):
     scores.recompute(con)
     row = con.execute("SELECT n_awards, overall, best_award FROM wine_score").fetchone()
     assert row[0] == 1 and row[1] == scores.overall([(92, 0.4)]) and "average of 2" in row[2]
+
+
+def test_score_out_of_100_is_not_100():
+    """Vinio: "James Suckling: 95 van de 100 punten" was read as 100 points."""
+    from wijnkoop.reference import awards_in_text, parse_award_text
+
+    assert awards_in_text("<p>James Suckling: 95 van de 100 punten</p>") == [("James Suckling", "95 punten")]
+    assert awards_in_text("95 out of 100 points - James Suckling") == [("James Suckling", "95 punten")]
+    assert awards_in_text("James Suckling gaf 94,5 uit 100") == [("James Suckling", "94.5 punten")]
+    assert awards_in_text("James Suckling 100 punten") == [("James Suckling", "100 punten")]  # a real 100
+    assert parse_award_text("James Suckling", "95 van de 100 punten")["points"] == 95
+    assert parse_award_text("Robert Parker 93 out of 100")["points"] == 93
+
+
+def test_awards_a_page_no_longer_shows_are_dropped(tmp_path):
+    from wijnkoop.collect import save_product
+    from wijnkoop.shops.gall import GallProduct
+
+    con = db.connect(tmp_path / "wijnkoop.db")
+    con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES ('Vinio', 'https://x')")
+    sid = con.execute("SELECT id FROM shop WHERE name='Vinio'").fetchone()[0]
+
+    def read(awards):
+        save_product(con, sid, GallProduct(
+            url="https://vinio/loewen", product_id="1", title="Carl Loewen Riesling Alte Reben 2025", colour="white",
+            volume_cl=75.0, price=14.95, in_stock_online=True, specs={"vintage": "2025"}, expert_awards=awards),
+            "2026-11-14")
+        con.commit()
+        return sorted(r[0] for r in con.execute(
+            "SELECT a.points FROM award a JOIN award_match m ON m.award_id = a.id"))
+
+    assert read([("James Suckling", "100 punten")]) == [100]  # read wrongly before the fix
+    assert read([("James Suckling", "95 punten")]) == [95]  # read again: the wrong one is gone
+    assert read([]) == [95]  # awards that did not load this time are kept
+
+
+def test_vivino_rating_the_shop_quotes(tmp_path):
+    import json
+
+    from wijnkoop import vivino
+    from wijnkoop.collect import save_product
+    from wijnkoop.shops.gall import GallProduct
+
+    shopify = json.dumps({"title": "Carl Loewen Riesling Alte Reben 2025",
+                          "description": "<p>James Suckling: 95 van de 100 punten</p><p>Vivino: 4.1</p>"})
+    assert vivino.in_page(shopify) == (4.1, None)
+    html = ('<meta name="description" content="Riesling uit de Mosel. 4,2 op Vivino (1.300 beoordelingen)">'
+            '<div class="related">Other wine · Vivino 3.2</div>')
+    assert vivino.in_page(html) == (4.2, 1300)
+    assert vivino.in_page('<div class="related">Other wine · Vivino 3.2</div>') is None  # not this wine's
+    assert vivino.in_page(json.dumps({"description": "Mooie Riesling"})) is None
+
+    con = db.connect(tmp_path / "wijnkoop.db")
+    con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES ('Vinio', 'https://x')")
+    sid = con.execute("SELECT id FROM shop WHERE name='Vinio'").fetchone()[0]
+    p = GallProduct(url="https://vinio/loewen", product_id="1", title="Carl Loewen Riesling Alte Reben 2025",
+                    colour="white", volume_cl=75.0, price=14.95, in_stock_online=True, specs={"vintage": "2025"},
+                    vivino=(4.1, None))
+    save_product(con, sid, p, "2026-11-14")
+    row = con.execute("SELECT rating, ratings_count, how FROM vivino_rating").fetchone()
+    assert tuple(row) == (4.1, None, "on the page of Vinio")
+    # a search that found the rating with its number of ratings is kept over the shop's quote
+    con.execute("UPDATE vivino_rating SET rating=4.0, ratings_count=900, how='snippet'")
+    save_product(con, sid, p, "2026-11-21")
+    assert tuple(con.execute("SELECT rating, ratings_count FROM vivino_rating").fetchone()) == (4.0, 900)
