@@ -1,0 +1,95 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<h1>What WijnKoop is doing</h1>
+<p class="lead">Updated every 3 seconds. CPU and disk speeds are measured over the last few seconds.</p>
+
+<div class="panel" style="margin-bottom:18px" id="summary"><span class="muted">Looking…</span></div>
+
+<h2>Working on now</h2>
+<div class="panel" style="margin-bottom:18px" id="running"></div>
+
+<h2>Waiting, in the order it will start</h2>
+<div class="panel" style="margin-bottom:18px" id="queue"></div>
+
+<h2>Processes</h2>
+<p class="small muted">CPU 100% is one processor fully busy. "Written" is everything a process wrote to disk since it started.</p>
+<div class="panel" style="margin-bottom:18px;overflow-x:auto"><table class="list" id="procs">
+<tr><th>Process</th><th class="num">CPU</th><th class="num">Memory</th><th class="num">Reads</th><th class="num">Writes</th><th class="num">Written</th></tr>
+</table></div>
+
+<h2>Disk and database</h2>
+<div class="panel" style="margin-bottom:18px"><table class="list" id="files">
+<tr><th>What</th><th class="num">Size</th><th class="num">Last change</th></tr>
+</table><p class="small muted" id="disk" style="margin-bottom:0"></p></div>
+
+<h2>Finished recently</h2>
+<div class="panel" style="margin-bottom:18px;overflow-x:auto"><table class="list" id="recent">
+<tr><th>Job</th><th>Started</th><th class="num">Took</th><th class="num">Pages</th><th>Note</th></tr>
+</table></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+function bytes(n) {
+  if (n == null) return "–";
+  const u = ["B", "kB", "MB", "GB", "TB"]; let i = 0;
+  while (Math.abs(n) >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return (i ? n.toFixed(n < 10 ? 1 : 0) : Math.round(n)) + " " + u[i];
+}
+const rate = n => n < 1000 ? "–" : bytes(n) + "/s";
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return Math.round(s) + " s ago";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400 * 2) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+}
+function rows(table, html) {
+  const t = $(table);
+  while (t.rows.length > 1) t.deleteRow(1);
+  t.insertAdjacentHTML("beforeend", html);
+}
+async function refresh() {
+  let d;
+  try { d = await (await fetch("/activity.json", {credentials: "same-origin"})).json(); }
+  catch (e) { $("summary").innerHTML = '<span class="muted">The app did not answer: ' + esc(e.message) + "</span>"; return; }
+  const m = d.machine, s = d.sample;
+  $("summary").innerHTML =
+    "<b>" + (d.busy_pct < 5 ? "Quiet" : d.busy_pct < 50 ? "Working" : "Busy") + "</b> · CPU " + Math.round(s.cpu_total) + "% of " + m.cpus +
+    " processors (" + d.busy_pct + "% of all)" +
+    (m.load ? " · load " + m.load.map(x => x.toFixed(1)).join(" / ") : "") +
+    " · memory " + bytes(m.memory_used) + (m.memory_max ? " of " + bytes(m.memory_max) : "") +
+    " · disk: " + (d.writing_now ? "<b>writing</b> " + rate(s.write_total) : "not writing") +
+    (s.read_total >= 1000 ? ", reading " + rate(s.read_total) : "") +
+    '<div class="small muted">' + d.time + "</div>";
+
+  const run = d.work.running.map(r => "<li><b>" + esc(r.job) + "</b> for " + esc(r.for) + " · " + (r.pages_ok || 0) + " pages" +
+      (r.pages_failed ? ", " + r.pages_failed + " failed" : "") + (r.note ? " · " + esc(r.note) : "") + "</li>")
+    .concat(d.extra.filter(e => !e.waiting).map(e => "<li>" + esc(e.text) + "</li>"));
+  $("running").innerHTML = run.length ? "<ul style='margin:0;padding-left:20px'>" + run.join("") + "</ul>"
+                                      : '<span class="muted">Nothing: no shop run, upload or check is going on.</span>';
+
+  const q = d.work.queue || [];
+  $("queue").innerHTML = q.length ? "<ol style='margin:0;padding-left:20px'>" + q.map(x =>
+      "<li><b>" + esc(x.what) + "</b><div class='small muted'>" + (x.who ? "asked by " + esc(x.who) + " · " : "") + esc(x.why) + "</div></li>").join("") + "</ol>"
+    : '<span class="muted">Nothing is waiting.</span>';
+
+  rows("procs", s.processes.map(p =>
+    "<tr><td>" + esc(p.name) + (p.pids.length > 1 ? " <span class='small muted'>(" + p.pids.length + " processes)</span>" : "") +
+    "<div class='meta'>running since " + new Date(p.since * 1000).toLocaleString() + (p.doing ? " · <b>" + esc(p.doing) + "</b>" : "") + "</div></td>" +
+    "<td class='num'>" + p.cpu.toFixed(0) + "%</td><td class='num'>" + bytes(p.rss) + "</td>" +
+    "<td class='num'>" + (p.io_ok ? rate(p.read_rate) : "?") + "</td><td class='num'>" + (p.io_ok ? rate(p.write_rate) : "?") + "</td>" +
+    "<td class='num'>" + (p.io_ok ? bytes(p.written) : "?") + "</td></tr>").join(""));
+
+  rows("files", d.files.files.map(f => "<tr><td>" + esc(f.label) + "<div class='meta'>" + esc(f.name) + "</div></td><td class='num'>" +
+    bytes(f.size) + "</td><td class='num'>" + ago(f.changed) + "</td></tr>").join(""));
+  $("disk").textContent = m.disk_free != null ? "Free on the data disk (" + d.files.folder + "): " + bytes(m.disk_free) + " of " + bytes(m.disk_total) + "." : "";
+
+  rows("recent", d.work.recent.map(r => "<tr><td>" + esc(r.job) + "</td><td>" + esc(r.started.replace("T", " ").slice(0, 16)) +
+    "</td><td class='num'>" + esc(r.took) + "</td><td class='num'>" + (r.pages_ok || 0) + (r.pages_failed ? " (" + r.pages_failed + " failed)" : "") +
+    "</td><td class='small'>" + esc(r.note) + "</td></tr>").join(""));
+}
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+</script>
+{% endblock %}
