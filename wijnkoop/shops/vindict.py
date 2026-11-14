@@ -14,6 +14,8 @@ from .gall import GallProduct as Product
 KEY = "vindict"
 SHOP_NAME = "Vindict"
 BASE = "https://www.vindict.nl"
+PACE = 10  # crawl-delay in its robots.txt (November 2026); a longer one read at the start of a run wins
+PACE_WHY = "the shop's robots.txt asks for this"
 SITEMAP = BASE + "/sitemap.xml"
 
 URL_RE = re.compile(r"^https://www\.vindict\.nl/product/(?P<pid>\d+)/(?P<slug>[^/?#]+)$")

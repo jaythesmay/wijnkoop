@@ -5,6 +5,8 @@ from . import wijnvoordeel
 KEY = "wijnbeurs"
 SHOP_NAME = "Wijnbeurs"
 BASE = "https://www.wijnbeurs.nl"
+PACE = 20  # crawl-delay in its robots.txt (November 2026); a longer one read at the start of a run wins
+PACE_WHY = "the shop's robots.txt asks for this"
 SITEMAP = BASE + "/products.xml"
 
 

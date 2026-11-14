@@ -99,6 +99,8 @@ def run_is_due(con, now: dt.datetime, job: str = "gall") -> bool:
     This also catches up on a run that was missed because the NAS was off,
     and carries on a run that broke off (a restart or an update), also one started from the app.
     """
+    if jobs.paused_run(con, job, now):
+        return False  # the shop asked us to wait; it carries on after the pause
     if jobs.resumable_run(con, job, now):
         return True
     row = con.execute(
@@ -285,6 +287,8 @@ def main(argv=None):
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stdout,
     )
+    # Not a line for every page fetched: WijnKoop logs what matters itself (and every 429 once).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(prog="wijnkoop")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="create the database").set_defaults(func=cmd_init)

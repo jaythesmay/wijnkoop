@@ -183,6 +183,10 @@ def queue(con, now: dt.datetime | None = None) -> list[dict]:
                             "why": s["advice"] + (f" (at most {lim['max_runs']} shops at once, "
                                                   f"{lim['max_browser_runs']} with the browser)"
                                                   if "fewer shops" in s["advice"] else "")})
+    # Shops that answered "too many requests": they wait, then carry on by themselves
+    for s in status.get("paused", []):
+        out.append({"what": f"{s['name']}: shop run, paused", "who": "the shop asked us to slow down (HTTP 429)",
+                    "why": s["advice"]})
     # 2. The weekly scheduler: one thing at a time, shops first
     due = [k for k in SHOPS if k not in running and run_is_due(con, now, k)]
     sched_busy = bool(running) or bool(due)

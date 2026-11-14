@@ -62,11 +62,11 @@ class BrowserClient(PoliteClient):
                 time.sleep(30 * (attempt + 1))
                 continue
             if resp is not None and resp.status in (429, 503):
-                self.delay = min(self.delay * 2, 120)
-                time.sleep(60 * (attempt + 1))
+                self.slow_down(resp.status, (resp.headers or {}).get("retry-after"), attempt, retries)
                 continue
             if resp is not None and resp.status >= 400:
                 raise RuntimeError(f"{resp.status} for {url}")
+            self.calm()
             return self._page.content()
         raise RuntimeError(f"Gave up on {url}")
 

@@ -7,6 +7,7 @@ never read the same shop at the same time: every shop run notes which process do
 whose process is still alive counts as running.
 """
 import datetime as dt
+import json
 import os
 import signal
 import random
@@ -14,8 +15,9 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
-from . import config
+from . import config, pace
 from .process import is_alive, process_token
 from .shops import SHOPS
 
@@ -36,16 +38,45 @@ def _setting(con, key, default):
         return default
 
 
+def _limits_file(con):
+    """limits.json next to the database. The limits are kept in a file, not in the database, so
+    "Save" is instant even while a shop run is saving its scores and holds the database."""
+    try:
+        path = con.execute("PRAGMA database_list").fetchone()[2]
+    except Exception:
+        return None
+    return Path(path).with_name("limits.json") if path else None
+
+
 def limits(con) -> dict:
-    return {"max_runs": max(1, _setting(con, "max_runs", DEFAULT_MAX_RUNS)),
-            "max_browser_runs": max(1, _setting(con, "max_browser_runs", DEFAULT_MAX_BROWSER_RUNS))}
+    out = {"max_runs": _setting(con, "max_runs", DEFAULT_MAX_RUNS),
+           "max_browser_runs": _setting(con, "max_browser_runs", DEFAULT_MAX_BROWSER_RUNS)}
+    path = _limits_file(con)
+    try:
+        saved = json.loads(path.read_text()) if path and path.exists() else {}
+        out.update({k: int(v) for k, v in saved.items() if k in out and str(v).isdigit()})
+    except (OSError, ValueError):
+        pass
+    return {k: max(1, v) for k, v in out.items()}
 
 
-def set_limits(con, max_runs, max_browser_runs):
+def set_limits(con, max_runs, max_browser_runs) -> dict:
+    """Save the limits. Waiting runs pick them up within 30 seconds. Touches no database table
+    when the database is a file, so it never waits for a run that is saving."""
+    new = limits(con)
     for key, value in (("max_runs", max_runs), ("max_browser_runs", max_browser_runs)):
         if str(value).isdigit() and 1 <= int(value) <= 10:
-            con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (key, str(int(value))))
-    con.commit()
+            new[key] = int(value)
+    path = _limits_file(con)
+    if path:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(new))
+        os.replace(tmp, path)
+    else:  # a database in memory (tests)
+        for key, value in new.items():
+            con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (key, str(value)))
+        con.commit()
+    return new
 
 
 def needs_browser(key: str) -> bool:
@@ -154,6 +185,14 @@ def resume_dead_jobs(con, start=None) -> list[int]:
     return ids
 
 
+def paused_run(con, key: str, now: dt.datetime | None = None) -> dict | None:
+    """The shop's unfinished run that waits because the shop answered "too many requests"."""
+    now = now or dt.datetime.now()
+    r = con.execute("""SELECT * FROM run_log WHERE job=? AND finished IS NULL AND wait_until > ?
+                       ORDER BY id DESC LIMIT 1""", (key, now.isoformat(timespec="seconds"))).fetchone()
+    return dict(r) if r and not is_alive(r["process"]) else None
+
+
 def resumable_run(con, key: str, now: dt.datetime | None = None) -> dict | None:
     """The shop's run that broke off (its process is gone) and will be carried on by itself:
     newer than its last finished run, less than RESUME_DAYS old, and not stopped by you."""
@@ -166,6 +205,8 @@ def resumable_run(con, key: str, now: dt.datetime | None = None) -> dict | None:
             return None  # running
         if (r["note"] or "").startswith("stopped by you"):
             return None
+        if r["wait_until"] and r["wait_until"] > now.isoformat(timespec="seconds"):
+            return None  # paused: the shop asked us to wait
         if last and r["started"] < last:
             continue  # a later run read the shop
         return dict(r)
@@ -213,8 +254,15 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
                GROUP BY reason ORDER BY n DESC LIMIT 3""", (shown["id"],))] if shown else []
         finished = dt.datetime.fromisoformat(last["finished"]) if last else None
         resumable = resumable_run(con, key, now) if not s["running"] else None
+        paused = paused_run(con, key, now) if not s["running"] else None
+        s["pace"] = pace.describe(con, module)
         if s["running"]:
             s["state"], s["advice"] = "running", s["running"]["note"] or "starting"
+        elif paused and not s["queued"]:
+            until = dt.datetime.fromisoformat(paused["wait_until"])
+            s["state"] = "paused"
+            s["advice"] = (f"the shop answered “too many requests” after {paused['pages_ok'] or 0} pages; "
+                           f"carries on by itself {until:%a %d %b %H:%M}, one page every {s['pace']['now']:.0f} s")
         elif resumable and not s["queued"]:
             s["state"] = "resuming"
             s["advice"] = (f"broke off {resumable['started'][:16].replace('T', ' ')} after {resumable['pages_ok'] or 0} "
@@ -250,6 +298,7 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
     return {"shops": shops, "jobs": jobs, "next_weekly": nxt, "weekly_soon": soon, "limits": limits(con),
             "useful": [s["key"] for s in shops if s["state"] == "useful"],
             "scheduler_runs": scheduler_runs, "resuming": [s for s in shops if s["state"] == "resuming"],
+            "paused": [s for s in shops if s["state"] == "paused"],
             "dead_jobs": dead_jobs(con)}
 
 

@@ -122,6 +122,7 @@ def _wine_scores(con, now):
 
     reparse_shop_awards(con)
     unlink_conflicts(con)
+    con.commit()  # not holding the database while the scores are worked out
     rows = con.execute(
         """SELECT m.wine_id, w.cuvee_id, c.producer_key, a.medal, a.points, a.raw_text,
                   comp.short, comp.weight, comp.kind, a.year, a.source
@@ -199,6 +200,7 @@ def _wine_scores(con, now):
              len(other_wines), round(statistics.mean(other_wines), 1) if other_wines else None, now,
              int(w["id"] in gold), w["label"]),
         )
+    con.commit()
     return wine_overall
 
 
@@ -250,7 +252,10 @@ def refresh_effective_prices(con) -> int:
 def recompute(con, today: dt.date | None = None):
     today = today or dt.date.today()
     now = dt.datetime.now().isoformat(timespec="seconds")
+    # Short writes with the working-out in between: other runs and the app's own buttons
+    # (Save, Read now, Watch) do not have to wait minutes for a shop run's scores.
     refresh_effective_prices(con)
+    con.commit()
     wine_overall = _wine_scores(con, now)
 
     offers = con.execute(
@@ -290,6 +295,7 @@ def recompute(con, today: dt.date | None = None):
 
     rate = rate_pct(con) / 100
     con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('points_rate_pct', ?)", (f"{rate * 100:g}",))
+    con.commit()
     # The market: the cheapest offer of every award wine in every shop, as a 93.
     market = {w: price_as(eff, s, rate) for w, (eff, s) in cheapest_per_wine.items()}
     sorted93 = sorted(market.values())
@@ -303,7 +309,7 @@ def recompute(con, today: dt.date | None = None):
     for items in by_colour.values():
         frontier |= nothing_better_for_less(items)
 
-    con.execute("DELETE FROM offer_score")
+    rows = []
     for o in offers:
         eff = o["effective_price_per_75cl"]
         if not eff:
@@ -333,14 +339,14 @@ def recompute(con, today: dt.date | None = None):
                 rank = round((len(sorted93) - bisect.bisect_right(sorted93, p93)) / (len(sorted93) - 1), 3)
             value = round(math.log(median93 / p93) / math.log(1 + rate), 1) if median93 else None
             p93 = round(p93, 2)
-        con.execute(
-            """INSERT INTO offer_score (offer_id, bottle_price_at_6, order_of_6, delivery_at_6, reference_price,
-                                        is_deal, deal_reason, value, fair_price, price_quality, verdict, updated,
-                                        wine, price_as_93, market_rank, best_for_price)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (o["id"], round(eff, 2), total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
-             value, fair, ratio, verdict(rank), now, o["label"], p93, rank, int(o["id"] in frontier)),
-        )
+        rows.append((o["id"], round(eff, 2), total6, delivery, ref, int(bool(reasons)), "; ".join(reasons) or None,
+                     value, fair, ratio, verdict(rank), now, o["label"], p93, rank, int(o["id"] in frontier)))
+    con.execute("DELETE FROM offer_score")
+    con.executemany(
+        """INSERT INTO offer_score (offer_id, bottle_price_at_6, order_of_6, delivery_at_6, reference_price,
+                                    is_deal, deal_reason, value, fair_price, price_quality, verdict, updated,
+                                    wine, price_as_93, market_rank, best_for_price)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     con.commit()
     return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),
             "fit_wines": n_fit, "rate_pct": rate * 100}

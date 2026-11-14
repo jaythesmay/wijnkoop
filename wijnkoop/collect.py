@@ -5,6 +5,8 @@ import re
 import sqlite3
 
 from . import db
+from . import pace as pace_of
+from .pace import ShopSaysWait
 from .fetch import NotAllowed, PoliteClient
 from .bottles import fix_volume
 from .deals import effective_per_75cl, parse_deal
@@ -278,7 +280,7 @@ def _open_run(con, job: str, resume: bool):
         ).fetchone()
         if row:
             log.info("%s: resuming the run that started %s", job, row["started"])
-            con.execute("UPDATE run_log SET process=? WHERE id=?", (process_token(), row["id"]))
+            con.execute("UPDATE run_log SET process=?, wait_until=NULL WHERE id=?", (process_token(), row["id"]))
             return row["id"], row["started"][:10], row["pages_ok"] or 0, row["pages_failed"] or 0
     # Older unfinished runs will never be resumed: mark them.
     con.execute("""UPDATE run_log SET note='broke off; not carried on, a later run read the shop again', process=NULL
@@ -307,12 +309,13 @@ def fetch_page(shop, client, url: str) -> str:
 
 
 def make_client(shop):
-    """A plain polite client, or a headless browser for shops that need one."""
+    """A plain polite client, or a headless browser for shops that need one, at the shop's own pace."""
+    pace = pace_of.normal(shop)
     if getattr(shop, "NEEDS_BROWSER", False):
         from .browser import BrowserClient
 
-        return BrowserClient(shop.BASE)
-    return PoliteClient(shop.BASE)
+        return BrowserClient(shop.BASE, min_delay=pace)
+    return PoliteClient(shop.BASE, min_delay=pace)
 
 
 def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
@@ -339,9 +342,14 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     name = shop.SHOP_NAME
 
     own_client = client is None
-    client = client or make_client(shop)
-    log.info("%s: waiting %.0f s between pages", name, client.delay)
-    products = shop.list_products(client)
+    try:
+        client = client or make_client(shop)
+        pace_of.start(con, shop, client)
+        con.commit()
+        log.info("%s: waiting %.0f s between pages", name, client.delay)
+        products = shop.list_products(client)
+    except ShopSaysWait as exc:
+        return _pause(shop, con, run_id, client, exc, ok, failed, "", own_client)
     log.info("%s: %d product pages to read", name, len(products))
     all_ids = {pid for _, pid in products}
     if limit:
@@ -364,6 +372,7 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     matcher = Matcher(con, other_than_shop=shop_id)
     is_wine = getattr(shop, "is_wine_product", None)
     today = dt.date.today().isoformat()
+    paused = None
     for i, (url, pid) in enumerate(products, already + 1):
         try:
             product = shop.parse_product(url, fetch_page(shop, client, url))
@@ -379,6 +388,11 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
             ok += 1
         except NotAllowed:
             log.warning("robots.txt does not allow %s, skipped", url)
+        except ShopSaysWait as exc:
+            # Not the page's fault: it is read when the run carries on after the pause.
+            con.rollback()
+            paused = exc
+            break
         except Exception as exc:  # keep going; one bad page must not stop the run
             con.rollback()  # nothing half-saved from this page
             failed += 1
@@ -395,8 +409,11 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
                         (ok, failed, f"{i} of {total} pages read", run_id))
             con.commit()
             log.info("%s: %d / %d pages done", name, i, total)
+    if paused:
+        return _pause(shop, con, run_id, client, paused, ok, failed, f"{i - 1} of {total} pages read; ", own_client)
     if own_client and hasattr(client, "close"):
         client.close()  # the headless browser, when one was used
+    pace_of.after_run(con, shop, client)
     if not limit and total and failed < total / 2:
         n = mark_gone(con, shop_id, all_ids, today)
         log.info("%s: %d wines are no longer on the site", name, n)
@@ -406,6 +423,29 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     )
     con.commit()
     log.info("%s: finished, %d ok, %d failed", name, ok, failed)
+    _after_pages(con, name)
+    return {"ok": ok, "failed": failed}
+
+
+def _pause(shop, con, run_id, client, exc, ok, failed, read, own_client) -> dict:
+    """The shop keeps answering "too many requests": stop asking. The run stays unfinished and
+    carries on by itself after the pause, at a slower pace."""
+    if own_client and hasattr(client, "close"):
+        client.close()
+    until = pace_of.pause(con, shop, client, exc)
+    pace = pace_of.learned(con, shop.KEY)["delay"]
+    note = (f"{read}paused: the shop answered HTTP {exc.status} (too many requests); carries on by itself "
+            f"after {until:%a %d %b %H:%M}, one page every {pace:.0f} s")
+    con.execute("UPDATE run_log SET pages_ok=?, pages_failed=?, note=?, process=NULL, wait_until=? WHERE id=?",
+                (ok, failed, note, until.isoformat(timespec="seconds"), run_id))
+    con.commit()
+    log.warning("%s: %s", shop.SHOP_NAME, note)
+    if ok:
+        _after_pages(con, shop.SHOP_NAME)
+    return {"ok": ok, "failed": failed, "paused": until}
+
+
+def _after_pages(con, name):
     from .awards.upload import relink_uploads
     from .scores import recompute
 
@@ -414,7 +454,6 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
         log.info("%s: %d awards from your uploaded results files now linked to new wines", name, n)
 
     recompute(con)
-    return {"ok": ok, "failed": failed}
 
 
 def collect_gall(limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:

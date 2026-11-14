@@ -309,8 +309,11 @@ async def update(datasette, request):
             await _write(datasette, jobs.stop_job, int(post["stop"]))
             return Response.redirect("/update")
         if post.get("limits"):
-            await _write(datasette, jobs.set_limits, post.get("max_runs"), post.get("max_browser_runs"))
-            return Response.redirect("/update#limits")
+            # A file next to the database, not a table: no waiting for a run that is saving.
+            saved = await _read(datasette, jobs.set_limits, post.get("max_runs"), post.get("max_browser_runs"))
+            if _wants_json(request):
+                return Response.json(saved)
+            return Response.redirect("/update?saved=limits#limits")
         if post.get("shop") == "all":
             status = await _read(datasette, jobs.shop_status)
             keys = status["useful"]
@@ -325,7 +328,8 @@ async def update(datasette, request):
     names = {s["key"]: s["name"] for s in status["shops"]}
     said = {k: [names.get(x, x) for x in (request.args.get(k) or "").split(",") if x]
             for k in ("started", "busy", "skipped")}
-    return await _page(datasette, request, "wk_update.html", "Read shops now", said=said, **status)
+    return await _page(datasette, request, "wk_update.html", "Read shops now", said=said,
+                       saved=request.args.get("saved"), **status)
 
 
 @hookimpl
