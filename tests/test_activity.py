@@ -95,3 +95,33 @@ def test_container_log_leaves_out_requests_that_went_well(tmp_path, monkeypatch)
         assert sum(type(f).__name__ == "QuietAccessLog" for f in access.filters) == 1
     finally:
         access.removeHandler(handler)
+
+
+def test_activity_and_read_shops_now_agree(tmp_path):
+    """Loes's case: a run of three shops; Vino.com is being read, Colaris and Vanouds de Zwaan were
+    paused by the shops (HTTP 429). Both pages say the same: one working, two paused."""
+    from wijnkoop import jobs
+
+    con = db.connect(tmp_path / "wijnkoop.db")
+    now = dt.datetime.now()
+    ts = lambda m: (now - dt.timedelta(minutes=m)).isoformat(timespec="seconds")
+    later = (now + dt.timedelta(hours=2)).isoformat(timespec="seconds")
+    con.execute("INSERT INTO app_job (shops, requested, process) VALUES (?, ?, ?)",
+                ("colaris,vanoudsdezwaan,vinocom", ts(60), process_token()))
+    for key, started in (("colaris", 55), ("vanoudsdezwaan", 40)):
+        con.execute("INSERT INTO run_log (job, started, pages_ok, note, wait_until) VALUES (?, ?, 12, ?, ?)",
+                    (key, ts(started), "paused: the shop answered HTTP 429", later))
+    con.execute("INSERT INTO run_log (job, started, pages_ok, process) VALUES ('vinocom', ?, 30, ?)",
+                (ts(20), process_token()))
+    con.commit()
+
+    states = {s["key"]: s["state"] for s in jobs.shop_status(con, now)["shops"]}
+    assert (states["vinocom"], states["colaris"], states["vanoudsdezwaan"]) == ("running", "paused", "paused")
+    work = activity.work(con, now)
+    assert [r["job"] for r in work["running"]] == ["Vino.com: shop run"]
+    waiting = [q["what"] for q in activity.queue(con, now)]
+    assert "Colaris: shop run, paused" in waiting and "Vanouds de Zwaan: shop run, paused" in waiting
+    assert not any(w.startswith("Vino.com") for w in waiting)
+    # on Read shops now the paused shops show once, in their run, not also on their own
+    status = jobs.shop_status(con, now)
+    assert status["paused_alone"] == [] and len(status["paused"]) == 2

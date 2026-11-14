@@ -143,9 +143,13 @@ def work(con, now: dt.datetime | None = None) -> dict:
 
     now = now or dt.datetime.now()
     running = []
-    for r in con.execute("SELECT * FROM run_log WHERE finished IS NULL ORDER BY id DESC LIMIT 20"):
+    from .shops import SHOPS
+
+    for r in con.execute("SELECT * FROM run_log WHERE finished IS NULL ORDER BY id LIMIT 20"):
         if r["process"] and not is_alive(r["process"]):
             continue  # broke off earlier; not running now
+        if not r["process"] and (r["job"] in SHOPS or r["wait_until"]):
+            continue  # a shop run without a living process is paused, broken off or waiting: see the queue
         started = dt.datetime.fromisoformat(r["started"])
         if not r["process"] and (now - started).total_seconds() > 6 * 3600:
             continue

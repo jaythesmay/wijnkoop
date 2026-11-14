@@ -32,7 +32,7 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 {% for s in resuming %}
 <tr><td>{{ s.name }} <span class="pill v-fair">carries on soon</span><div class="meta">{{ s.advice }}</div></td><td></td></tr>
 {% endfor %}
-{% for s in paused %}
+{% for s in paused_alone %}
 <tr><td>{{ s.name }} <span class="pill v-fair">paused</span><div class="meta">{{ s.advice }}</div></td><td></td></tr>
 {% endfor %}
 {% for j in dead_jobs %}
@@ -45,7 +45,7 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 {% endif %}
 {% for j in jobs %}
 <tr>
-  <td>{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% if s.state == 'running' %} <span class="pill v-top">reading</span>{% elif s.state == 'queued' %} <span class="pill v-fair">waiting</span>{% else %} <span class="pill v-good">done</span>{% endif %}{% endfor %}{% if not loop.last %} · {% endif %}{% endfor %}
+  <td>{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% if s.state == 'running' %} <span class="pill v-top">reading</span>{% elif s.state == 'queued' %} <span class="pill v-fair">waiting</span>{% elif s.state == 'paused' %} <span class="pill v-fair">paused</span>{% elif s.state == 'resuming' %} <span class="pill v-fair">carries on soon</span>{% else %} <span class="pill v-good">done</span>{% endif %}{% endfor %}{% if not loop.last %} · {% endif %}{% endfor %}
     <div class="meta">Started {{ j.requested.replace('T', ' ')[:16] }}</div></td>
   <td class="num">
     <form method="post" action="/update">
