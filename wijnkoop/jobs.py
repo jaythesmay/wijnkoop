@@ -261,7 +261,7 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
         s["warning"] = warning(con, key)
         if s["running"]:
             s["state"], s["advice"] = "running", s["running"]["note"] or "starting"
-        elif paused and not s["queued"]:
+        elif paused:  # also inside a run of several shops: that run went on with the next shop
             until = dt.datetime.fromisoformat(paused["wait_until"])
             s["state"] = "paused"
             s["advice"] = (f"the shop answered “too many requests” after {paused['pages_ok'] or 0} pages; "
@@ -302,6 +302,7 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
             "useful": [s["key"] for s in shops if s["state"] == "useful"],
             "scheduler_runs": scheduler_runs, "resuming": [s for s in shops if s["state"] == "resuming"],
             "paused": [s for s in shops if s["state"] == "paused"],
+            "paused_alone": [s for s in shops if s["state"] == "paused" and s["key"] not in in_jobs],
             "dead_jobs": dead_jobs(con)}
 
 
