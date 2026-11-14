@@ -137,6 +137,7 @@ def _shop(con, i, title, price=12.0):
     g = GallProduct(url=f"https://www.gall.nl/w-{i}.html", product_id=str(i), title=title, colour="red", volume_cl=75,
                     price=price, in_stock_online=True, specs={"vintage": "2020", "producer": title.split()[0]})
     save_product(con, 1, g, TODAY.isoformat())
+    con.commit()
     return con.execute("SELECT wine_id FROM offer WHERE shop_product_id=?", (str(i),)).fetchone()[0]
 
 
@@ -236,3 +237,73 @@ def test_wine_page_says_how_vivino_counts(tmp_path):
     assert page.status_code == 200
     assert "counts as 93 points with 100% weight (2,150 ratings for this vintage)" in page.text
     assert "a reference price, not an offer" in page.text and "% cheaper here" in page.text
+
+
+def _one_wine(tmp_path):
+    con = db.connect(tmp_path / "wijnkoop.db")
+    g = GallProduct(url="https://www.gall.nl/catena-75cl-100700.html", product_id="100700",
+                    title="Catena Zapata Malbec Argentino", colour="red", volume_cl=75, price=29.99,
+                    in_stock_online=True, specs={"vintage": "2020", "producer": "Catena Zapata"})
+    save_product(con, 1, g, TODAY.isoformat())
+    con.commit()
+    return con
+
+
+def test_status_for_the_update_page(tmp_path, monkeypatch):
+    con = _one_wine(tmp_path)
+    monkeypatch.setattr(vivino, "load_key", lambda path=None: None)
+    st = vivino.status(con)
+    assert not st["has_key"] and st["next"] is None and st["waiting"] == 1 and st["used"] == 0
+    assert st["limit"] == vivino.MONTHLY_LIMIT and not st["running"]
+
+    monkeypatch.setattr(vivino, "load_key", lambda path=None: "secret")
+    assert vivino.status(con)["next"] == "as soon as the shop runs are done"
+    r = vivino.run_weekly(con, client=FakeHttp(CATENA))
+    assert r["looked_up"] == 1 and r["rated"] == 1
+    run = con.execute("SELECT * FROM run_log WHERE job='vivino'").fetchone()
+    assert run["finished"] and run["process"] is None and run["pages_ok"] == 1
+    st = vivino.status(con)
+    assert st["rated"] == 1 and st["waiting"] == 0 and st["used"] == 1 and st["last"]["note"].startswith("1 of 1")
+    assert st["next"] == (dt.datetime.fromisoformat(run["started"]) + dt.timedelta(days=7)).strftime("%A %d %B")
+    assert not vivino.weekly_due(con, dt.datetime.now())
+
+    # a look-up going on now: not started a second time by the scheduler
+    from wijnkoop.process import process_token
+
+    con.execute("INSERT INTO run_log (job, started, process, note, pages_ok) VALUES ('vivino', ?, ?, ?, 3)",
+                ("2026-11-14T10:00:00", process_token(), "looking up 20 wines"))
+    assert vivino.running(con)["pages_ok"] == 3
+    assert not vivino.weekly_due(con, dt.datetime(2027, 1, 1)) and vivino.status(con)["next"] is None
+
+
+def test_update_page_shows_vivino_and_starts_it(tmp_path, monkeypatch):
+    import asyncio
+    import re
+    from pathlib import Path
+
+    from datasette.app import Datasette
+    from datasette.plugins import pm
+
+    root = Path(__file__).parent.parent
+    con = _one_wine(tmp_path)
+    con.close()
+    monkeypatch.setattr(vivino, "load_key", lambda path=None: "secret")
+    started = []
+    monkeypatch.setattr(vivino, "start_in_background", lambda: started.append(1))
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(root / "datasette" / "plugins"),
+                   template_dir=str(root / "datasette" / "templates"))
+    assert next(p for p in pm.get_plugins() if getattr(p, "__name__", "") == "wijnkoop_ui.py")
+
+    async def run():
+        page = await ds.client.get("/update")
+        token = re.search(r'name="csrftoken" value="([^"]+)"', page.text).group(1)
+        post = await ds.client.post("/update", data={"csrftoken": token, "vivino": "1"},
+                                    cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")})
+        return page, post, await ds.client.get(post.headers["location"])
+
+    page, post, after = asyncio.run(run())
+    assert 'id="vivino"' in page.text and "Look up now" in page.text
+    assert f"Searches in {dt.date.today():%B}: <b>0</b> of {vivino.MONTHLY_LIMIT}" in page.text
+    assert "1 wine on sale still to look up" in page.text
+    assert post.status_code == 302 and post.headers["location"] == "/update?vivino=started#vivino"
+    assert started == [1] and "Started: the Vivino ratings are looked up" in after.text
