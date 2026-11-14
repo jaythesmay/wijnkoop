@@ -1,0 +1,67 @@
+{% extends "wk_base.html" %}
+{% block content %}
+<p class="small"><a href="/upload">← Results files</a></p>
+<h1>Award links to check</h1>
+<p class="lead">An official award was linked to a wine in your shops with a name that is alike but not the same.
+It counts until you say otherwise, and it stays on this list until you answer. Your answer also holds for the same
+award in other files, and for files you load later.</p>
+{% if links %}
+<p class="small muted" id="left">{{ links|length }} to check.</p>
+<style>
+#links th.grp{border-bottom:0;padding-bottom:0}
+#links td.estate,#links td.wn{overflow-wrap:break-word;min-width:6em}
+@media (max-width:640px){
+  #links tr.head{display:none}
+  #links,#links tbody,#links tr,#links td{display:block}
+  #links tr{padding:10px 0;border-bottom:1px solid var(--line)}
+  #links td,#links td.num{border:0;padding:2px 0;text-align:left;min-width:0}
+  #links td:empty{display:none}
+  #links td[data-label]::before{content:attr(data-label);display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+}
+</style>
+<div class="panel" style="overflow-x:auto"><table class="list" id="links">
+<tr class="head"><th colspan="2" class="grp">In the results file</th><th colspan="2" class="grp">In your shops</th><th></th><th></th></tr>
+<tr class="head"><th>Estate</th><th>Wine</th><th>Estate</th><th>Wine</th><th class="num">Price</th><th>Same wine?</th></tr>
+{% for m in links %}
+<tr id="a{{ m.award_id }}">
+  <td data-label="Estate in the file" class="estate">{% if m.file_estate %}{{ m.file_estate }}{% else %}<span class="muted small">not in the file</span>{% endif %}</td>
+  <td data-label="Wine in the file" class="wn"><b>{{ m.file_wine }}</b>{% if m.award_vintage %} {{ m.award_vintage }}{% endif %}
+    <div class="meta">{{ m.results|join(' · ') }}{% if m.files > 1 %} · in {{ m.files }} files{% endif %}</div></td>
+  <td data-label="Estate in your shops" class="estate">{{ m.shop_estate or '' }}</td>
+  <td data-label="Wine in your shops" class="wn"><a href="/wine/{{ m.wine_id }}">{{ m.shop_wine }}</a>{% if m.wine_vintage %} {{ m.wine_vintage }}{% endif %}<div class="meta">{{ (m.match_score * 100)|round|int }}% alike</div></td>
+  <td data-label="Price" class="num" style="white-space:nowrap">{% if m.price %}{{ m.price|money }}<div class="meta">{{ m.price_shop }}{% if m.shops > 1 %} +{{ m.shops - 1 }}{% endif %}</div>{% else %}<span class="muted">not on sale</span>{% endif %}</td>
+  <td style="white-space:nowrap"><form method="post" action="/upload/check" class="verdict">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}"><input type="hidden" name="award" value="{{ m.award_id }}"><input type="hidden" name="wine" value="{{ m.wine_id }}">
+    <span class="said small">not checked yet</span><br>
+    <button type="submit" name="verdict" value="same" title="Yes, this award is for this wine: count it">✓ Yes</button>
+    <button type="submit" name="verdict" value="other" title="No, another wine: don't count it">✗ No</button>
+  </form></td>
+</tr>
+{% endfor %}
+</table></div>
+<p class="small muted">Your answer is saved at once and stays visible here until you reload. The scores are worked out again in the background, within a minute.</p>
+<script>
+document.querySelectorAll("form.verdict").forEach(f => f.addEventListener("submit", async ev => {
+  const btn = ev.submitter; if (!btn) return;
+  ev.preventDefault();
+  const body = new URLSearchParams(new FormData(f)); body.set("verdict", btn.value);
+  const said = f.querySelector(".said"), row = f.closest("tr");
+  said.textContent = "Saving…";
+  try {
+    const r = await fetch(f.action, {method: "POST", body, credentials: "same-origin", headers: {"x-wk-quick": "1"}});
+    if (r.status === 403) throw new Error("reload the page (F5) and try again");
+    const d = await r.json();
+    if (!d.saved) throw new Error("already answered or gone; reload the page");
+    const yes = d.verdict === "same";
+    said.innerHTML = yes ? "<b>✓ Yes</b>, counts" : "<b>✗ No</b>, not counted";
+    f.querySelector('[value="same"]').hidden = yes;
+    f.querySelector('[value="other"]').hidden = !yes;
+    row.style.opacity = .6;
+    document.getElementById("left").textContent = d.left + " left to check.";
+  } catch (e) { said.textContent = "Not saved: " + e.message; }
+}));
+</script>
+{% else %}
+<div class="empty">Nothing to check: every award link has your answer, or was certain enough.</div>
+{% endif %}
+{% endblock %}

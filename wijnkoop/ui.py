@@ -436,7 +436,12 @@ def week(conn, today: dt.date | None = None) -> list[dict]:
 def nav(conn) -> dict:
     """Counts for the menu bar."""
     return {"order_bottles": conn.execute("SELECT COALESCE(SUM(qty), 0) FROM order_item").fetchone()[0],
-            "watched": conn.execute("SELECT COUNT(*) FROM watch").fetchone()[0]}
+            "watched": conn.execute("SELECT COUNT(*) FROM watch").fetchone()[0],
+            # award links from your results files that wait for your Yes or No (the same award once)
+            "to_check": conn.execute(
+                """SELECT COUNT(DISTINCT m.wine_id || '|' || LOWER(COALESCE(a.producer_raw, '') || a.name_raw))
+                   FROM award_match m JOIN award a ON a.id = m.award_id
+                   WHERE m.confirmed IS NULL AND a.source = 'upload'""").fetchone()[0]}
 
 
 def money(x) -> str:

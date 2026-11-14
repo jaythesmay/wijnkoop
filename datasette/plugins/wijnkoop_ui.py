@@ -191,8 +191,13 @@ async def upload_report(datasette, request):
     if request.method == "POST":
         post = await request.post_vars()
         if post.get("verdict") in ("same", "other") and post.get("award", "").isdigit() and post.get("wine", "").isdigit():
-            await _write(datasette, award_upload.judge_match, upload_id, int(post["award"]), int(post["wine"]),
-                         post["verdict"] == "same")
+            # Saved right away; the scores follow in the background, so the page answers at once.
+            hit = await _write(datasette, award_upload.judge_match, upload_id, int(post["award"]), int(post["wine"]),
+                               post["verdict"] == "same", False)
+            if hit:
+                _rescore_soon()
+            if _wants_json(request):
+                return Response.json({"saved": hit, "verdict": post["verdict"]})
             return Response.redirect(f"/upload/{upload_id}#a{post['award']}")
         if post.get("delete"):
             await _write(datasette, award_upload.delete_upload, upload_id)
@@ -202,6 +207,46 @@ async def upload_report(datasette, request):
         return Response.html("<p>This upload is not known. <a href='/upload'>Uploads</a></p>", status=404)
     return await _page(datasette, request, "wk_upload_report.html", f"Upload: {report['upload']['filename']}",
                        **report)
+
+
+_RESCORE = {"timer": None}
+
+
+def _rescore_soon(wait: float = 20):
+    """Work the scores out again a little after the last Yes/No, once for a series of clicks,
+    in its own process so the pages stay quick."""
+    import subprocess
+    import sys
+    import threading
+
+    def go():
+        proc = subprocess.Popen([sys.executable, "-m", "wijnkoop", "scores"], start_new_session=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        threading.Thread(target=proc.wait, daemon=True).start()
+
+    if _RESCORE["timer"]:
+        _RESCORE["timer"].cancel()
+    _RESCORE["timer"] = threading.Timer(wait, go)
+    _RESCORE["timer"].daemon = True
+    _RESCORE["timer"].start()
+
+
+async def upload_check(datasette, request):
+    """Every award link from your results files that waits for your Yes or No, until you answer."""
+    if request.method == "POST":
+        post = await request.post_vars()
+        hit = False
+        if post.get("verdict") in ("same", "other") and post.get("award", "").isdigit() and post.get("wine", "").isdigit():
+            hit = await _write(datasette, award_upload.judge_match, None, int(post["award"]), int(post["wine"]),
+                               post["verdict"] == "same", False)
+            if hit:
+                _rescore_soon()
+        if _wants_json(request):
+            return Response.json({"saved": hit, "verdict": post.get("verdict"),
+                                  "left": (await _read(datasette, ui.nav))["to_check"]})
+        return Response.redirect(f"/upload/check#a{post.get('award', '')}")
+    rows = await _read(datasette, award_upload.to_check)
+    return await _page(datasette, request, "wk_upload_check.html", "Award links to check", links=rows)
 
 
 async def upload_csv(datasette, request):
@@ -360,6 +405,7 @@ def register_routes():
         (r"^/upload/(?P<upload_id>\d+)/file$", upload_file),
         (r"^/upload/(?P<upload_id>\d+)/report\.csv$", upload_csv),
         (r"^/upload/progress$", upload_progress),
+        (r"^/upload/check$", upload_check),
         (r"^/activity$", activity_page),
         (r"^/activity\.json$", activity_json),
         (r"^/order$", order),

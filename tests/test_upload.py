@@ -350,7 +350,7 @@ def test_say_yes_or_no_to_a_link(con):
     assert not upload.judge_match(con, uid + 1, olarra["award_id"], olarra["wine_id"], same=True)  # another upload
 
 
-def test_report_buttons_say_yes_or_no(con, tmp_path):
+def test_report_buttons_say_yes_or_no(con, tmp_path, monkeypatch):
     from datasette.app import Datasette
 
     r = upload.import_upload(con, "mundus.txt", RESULTS, today=TODAY)
@@ -358,15 +358,121 @@ def test_report_buttons_say_yes_or_no(con, tmp_path):
     con.close()
     ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
                    template_dir=str(ROOT / "datasette" / "templates"))
+    from datasette.plugins import pm
+
+    plugin = next(p for p in pm.get_plugins() if getattr(p, "__name__", "") == "wijnkoop_ui.py")
+    rescored = []
+    monkeypatch.setattr(plugin, "_rescore_soon", lambda: rescored.append(1))
 
     async def run():
         page = await ds.client.get(f"/upload/{uid}")
         token = re.search(r'name="csrftoken" value="([^"]+)"', page.text).group(1)
+        cookies = {"ds_csrftoken": page.cookies.get("ds_csrftoken")}
         post = await ds.client.post(f"/upload/{uid}", data={"csrftoken": token, "award": m["award_id"],
-                                                            "wine": m["wine_id"], "verdict": "other"},
-                                    cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")})
-        return page, post, await ds.client.get(f"/upload/{uid}")
+                                                            "wine": m["wine_id"], "verdict": "other"}, cookies=cookies)
+        after = await ds.client.get(f"/upload/{uid}")
+        quick = await ds.client.post(f"/upload/{uid}", data={"csrftoken": token, "award": m["award_id"],
+                                                             "wine": m["wine_id"], "verdict": "same"},
+                                     cookies=cookies, headers={"x-wk-quick": "1"})
+        return page, post, after, quick, await ds.client.get(f"/upload/{uid}")
 
-    page, post, after = asyncio.run(run())
+    page, post, after, quick, again = asyncio.run(run())
     assert "✗ No" in page.text and post.status_code == 302
-    assert "not this wine, not counted" in after.text
+    assert "not this wine, not counted" in after.text and "<b>✗ No</b>, not counted" in after.text
+    assert quick.json() == {"saved": True, "verdict": "same"} and rescored == [1, 1]
+    assert "<b>✓ Yes</b>, counts" in again.text
+    # the price of the wine in your shops, cheapest shop first
+    links = page.text[page.text.index('id="links"'):]
+    assert re.search(r"€\d+\.\d\d", links) and "<th class=\"num\">Price</th>" in page.text
+
+
+def test_estate_and_wine_apart():
+    from wijnkoop.normalize import split_estate
+
+    assert split_estate("Herdade do Esporão Reserva Tinto", "Esporão") == ("Esporão", "Reserva Tinto")
+    assert split_estate("Bodegas Muga Reserva", "Bodegas Muga") == ("Bodegas Muga", "Reserva")
+    assert split_estate("Cape Dream Merlot", "Cape Mentelle") == ("Cape Mentelle", "Cape Dream Merlot")
+    assert split_estate("Muga", "Bodegas Muga") == ("Bodegas Muga", "Muga")  # never an empty wine
+    assert split_estate("Rioja Reserva", None) == (None, "Rioja Reserva")
+    # a results file: with a producer column, or with the estate at the start of the name
+    assert upload.file_parts("Bodegas Olarra", "Cerro Anon Crianza") == ("Bodegas Olarra", "Cerro Anon Crianza")
+    assert upload.file_parts("Esporão", "Esporão Reserva") == ("Esporão", "Reserva")
+    assert upload.file_parts(None, "Bodegas Muga Rioja Reserva", "Bodegas Muga") == ("Bodegas Muga", "Rioja Reserva")
+    assert upload.file_parts(None, "Rioja Reserva", "Bodegas Muga") == (None, "Rioja Reserva")
+
+
+def test_wine_name_in_the_tables(con):
+    row = con.execute("SELECT producer, wine_name FROM wine_list WHERE wine LIKE 'Bodegas Muga%'").fetchone()
+    assert tuple(row) == ("Bodegas Muga", "Reserva")
+    assert con.execute("SELECT wine_name FROM cuvee WHERE name='Bodegas Muga Reserva'").fetchone()[0] == "Reserva"
+    con.execute("UPDATE wine SET wine_name=NULL")
+    assert db.fill_wine_names(con) >= 4
+    assert con.execute("SELECT COUNT(*) FROM wine WHERE wine_name IS NULL").fetchone()[0] == 0
+
+
+def _answers(con):
+    return [r[0] for r in con.execute("SELECT m.confirmed FROM award_match m JOIN award a ON a.id = m.award_id "
+                                      "WHERE a.name_raw = 'Cerro Anon Crianza'")]
+
+
+PROBABLE = b"Producer;Wine;Vintage;Medal\nBodegas Olarra;Cerro Anon Crianza;2021;Silver\n"
+
+
+def test_a_match_to_check_stays_until_answered_and_is_not_asked_twice(con):
+    first = upload.import_upload(con, "a.csv", PROBABLE, competition="IWSC", year=2025, today=TODAY)
+    assert first["upload"]["log"]["review"] == 1
+    todo = upload.to_check(con)
+    assert len(todo) == 1 and todo[0]["files"] == 1 and todo[0]["price"] == 12.0
+    assert (todo[0]["file_estate"], todo[0]["file_wine"]) == ("Bodegas Olarra", "Cerro Anon Crianza")
+    assert (todo[0]["shop_estate"], todo[0]["shop_wine"]) == ("Bodegas Olarra", "Crianza")
+    upload.relink_uploads(con)
+    scores.recompute(con, TODAY)
+    assert len(upload.to_check(con)) == 1  # still waiting: nothing but your Yes or No ends it
+
+    # the same award in a second file: in the queue already, so not a second task
+    second = upload.import_upload(con, "b.csv", PROBABLE, competition="IWSC", year=2025, today=TODAY)
+    assert second["upload"]["log"]["review_known"] == 1
+    todo = upload.to_check(con)
+    assert len(todo) == 1 and todo[0]["files"] == 2 and todo[0]["results"] == ["IWSC 2025 Silver"]
+
+    # one answer for both files, and for a file loaded later
+    assert upload.judge_match(con, None, todo[0]["award_id"], todo[0]["wine_id"], same=False)
+    assert upload.to_check(con) == []
+    assert _answers(con) == [0] * 2
+    third = upload.import_upload(con, "c.csv", PROBABLE, competition="IWSC", year=2025, today=TODAY)
+    assert third["upload"]["log"]["answered_before"] == 1
+    assert upload.to_check(con) == []
+    assert _answers(con) == [0] * 3
+
+
+def test_check_page(con, tmp_path, monkeypatch):
+    from datasette.app import Datasette
+
+    upload.import_upload(con, "a.csv", PROBABLE, competition="IWSC", year=2025, today=TODAY)
+    m = upload.to_check(con)[0]
+    con.close()
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                   template_dir=str(ROOT / "datasette" / "templates"))
+    from datasette.plugins import pm
+
+    plugin = next(p for p in pm.get_plugins() if getattr(p, "__name__", "") == "wijnkoop_ui.py")
+    monkeypatch.setattr(plugin, "_rescore_soon", lambda: None)
+
+    async def run():
+        home = await ds.client.get("/")
+        page = await ds.client.get("/upload/check")
+        token = re.search(r'name="csrftoken" value="([^"]+)"', page.text).group(1)
+        post = await ds.client.post("/upload/check", data={"csrftoken": token, "award": m["award_id"],
+                                                           "wine": m["wine_id"], "verdict": "same"},
+                                    cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")},
+                                    headers={"x-wk-quick": "1"})
+        return home, page, post, await ds.client.get("/upload/check")
+
+    home, page, post, after = asyncio.run(run())
+    assert "/upload/check" in home.text
+    links = page.text[page.text.index('id="links"'):]
+    assert "<th>Estate</th><th>Wine</th><th>Estate</th><th>Wine</th>" in links
+    assert '<td data-label="Estate in the file" class="estate">Bodegas Olarra</td>' in links and "<b>Cerro Anon Crianza</b> 2021" in links
+    assert ">Crianza</a> 2021" in links and "€12.00" in links
+    assert post.json() == {"saved": True, "verdict": "same", "left": 0}
+    assert "Nothing to check" in after.text
