@@ -117,13 +117,59 @@ def live_jobs(con) -> list[dict]:
             if is_alive(r["process"]) or (not r["process"] and r["requested"] >= recent)]
 
 
+RESUME_DAYS = 8  # a run that broke off longer ago is not carried on: a new run reads everything
+
+
 def close_dead_jobs(con):
-    """Runs that ended without saying so (a container restart, the stop button)."""
+    """Runs asked for that never started. A run whose process died (a container restart or an
+    update) is not closed: the scheduler starts it again (resume_dead_jobs)."""
     alive = {j["id"] for j in live_jobs(con)}
-    for r in con.execute("SELECT id FROM app_job WHERE finished IS NULL").fetchall():
-        if r["id"] not in alive:
-            con.execute("UPDATE app_job SET finished=?, note=COALESCE(note, 'stopped') WHERE id=?",
+    for r in con.execute("SELECT id, process FROM app_job WHERE finished IS NULL").fetchall():
+        if r["id"] not in alive and not r["process"]:
+            con.execute("UPDATE app_job SET finished=?, note=COALESCE(note, 'did not start') WHERE id=?",
                         (dt.datetime.now().isoformat(timespec="seconds"), r["id"]))
+
+
+def dead_jobs(con) -> list[dict]:
+    """Runs started from the app whose process died before they were done."""
+    return [dict(r) for r in con.execute("SELECT * FROM app_job WHERE finished IS NULL AND process IS NOT NULL")
+            if not is_alive(r["process"])]
+
+
+def resume_dead_jobs(con, start=None) -> list[int]:
+    """Start the runs from the app again that a restart broke off. Each carries on where it stopped
+    and skips the shops it had already read. Called by the scheduler."""
+    start = start or launch
+    ids = []
+    for j in dead_jobs(con):
+        if j["requested"] < (dt.datetime.now() - dt.timedelta(days=RESUME_DAYS)).isoformat(timespec="seconds"):
+            con.execute("UPDATE app_job SET finished=?, note='broke off too long ago' WHERE id=?",
+                        (dt.datetime.now().isoformat(timespec="seconds"), j["id"]))
+            continue
+        con.execute("UPDATE app_job SET process=NULL, note='carrying on after a restart' WHERE id=?", (j["id"],))
+        con.commit()
+        start(j["id"])
+        ids.append(j["id"])
+    con.commit()
+    return ids
+
+
+def resumable_run(con, key: str, now: dt.datetime | None = None) -> dict | None:
+    """The shop's run that broke off (its process is gone) and will be carried on by itself:
+    newer than its last finished run, less than RESUME_DAYS old, and not stopped by you."""
+    now = now or dt.datetime.now()
+    last = con.execute("SELECT MAX(finished) FROM run_log WHERE job=? AND finished IS NOT NULL", (key,)).fetchone()[0]
+    since = (now - dt.timedelta(days=RESUME_DAYS)).isoformat(timespec="seconds")
+    for r in con.execute("""SELECT * FROM run_log WHERE job=? AND finished IS NULL AND started >= ?
+                            ORDER BY started DESC""", (key, since)):
+        if is_alive(r["process"]):
+            return None  # running
+        if (r["note"] or "").startswith("stopped by you"):
+            return None
+        if last and r["started"] < last:
+            continue  # a later run read the shop
+        return dict(r)
+    return None
 
 
 def running_shops(con) -> dict[str, dict]:
@@ -166,8 +212,13 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
             """SELECT reason, COUNT(*) AS n, MIN(url) AS example FROM failed_page WHERE run_id=?
                GROUP BY reason ORDER BY n DESC LIMIT 3""", (shown["id"],))] if shown else []
         finished = dt.datetime.fromisoformat(last["finished"]) if last else None
+        resumable = resumable_run(con, key, now) if not s["running"] else None
         if s["running"]:
             s["state"], s["advice"] = "running", s["running"]["note"] or "starting"
+        elif resumable and not s["queued"]:
+            s["state"] = "resuming"
+            s["advice"] = (f"broke off {resumable['started'][:16].replace('T', ' ')} after {resumable['pages_ok'] or 0} "
+                           "pages (a restart or update); carries on by itself within 10 minutes")
         elif s["queued"]:
             note = next((j["note"] for j in jobs if j["id"] == queued[key]), None)
             s["state"] = "queued"
@@ -175,8 +226,13 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
                            else "waiting for the shop before it in the same run")
         elif s["broke_off"] and s["broke_off"]["started"] > (finished.isoformat() if finished else ""):
             s["state"] = "useful"
-            s["advice"] = (f"the last run stopped ({s['broke_off']['note'] or 'before the first page'}); "
-                           "a new run carries on from there")
+            stopped = (s["broke_off"]["note"] or "").startswith("stopped by you")
+            s["advice"] = (f"{'you stopped the last run' if stopped else 'the last run broke off'} after "
+                           f"{s['broke_off']['pages_ok'] or 0} pages; "
+                           + ("“Carry on” goes on from there" if s["broke_off"]["started"] >=
+                              (now - dt.timedelta(days=RESUME_DAYS)).isoformat(timespec="seconds")
+                              else "too long ago to carry on: a new run reads everything"))
+            s["carry_on"] = True
         elif not finished:
             s["state"], s["advice"] = "useful", "a first run reads all its wines"
         elif (now - finished).total_seconds() < FRESH_HOURS * 3600:
@@ -189,8 +245,12 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
             s["state"], s["advice"] = "useful", f"read {_ago(finished, now)}"
         s["last_text"] = f"{finished:%a %d %b %H:%M}" if finished else "never"
         shops.append(s)
+    in_jobs = {k for j in jobs for k in j["shops"].split(",")}
+    scheduler_runs = [s for s in shops if s["state"] == "running" and s["key"] not in in_jobs]
     return {"shops": shops, "jobs": jobs, "next_weekly": nxt, "weekly_soon": soon, "limits": limits(con),
-            "useful": [s["key"] for s in shops if s["state"] == "useful"]}
+            "useful": [s["key"] for s in shops if s["state"] == "useful"],
+            "scheduler_runs": scheduler_runs, "resuming": [s for s in shops if s["state"] == "resuming"],
+            "dead_jobs": dead_jobs(con)}
 
 
 # --- starting and stopping -------------------------------------------------------------------
@@ -232,7 +292,8 @@ def stop_job(con, job_id: int) -> bool:
         return False
     con.execute("UPDATE app_job SET finished=?, note='stopped' WHERE id=?",
                 (dt.datetime.now().isoformat(timespec="seconds"), job_id))
-    con.execute("UPDATE run_log SET process = NULL WHERE finished IS NULL AND process = ?", (r["process"],))
+    con.execute("UPDATE run_log SET process = NULL, note = 'stopped by you' WHERE finished IS NULL AND process = ?",
+                (r["process"],))
     con.commit()
     return True
 
@@ -246,8 +307,11 @@ def run_job(con, job_id: int, collect) -> list[str]:
     con.execute("UPDATE app_job SET process=? WHERE id=?", (me, job_id))
     con.commit()
     keys = con.execute("SELECT shops FROM app_job WHERE id=?", (job_id,)).fetchone()["shops"].split(",")
+    requested = con.execute("SELECT requested FROM app_job WHERE id=?", (job_id,)).fetchone()["requested"]
     done, notes = [], []
     for key in keys:
+        if con.execute("SELECT 1 FROM run_log WHERE job=? AND finished >= ? LIMIT 1", (key, requested)).fetchone():
+            continue  # read already, before a restart broke this run off
         if key in running_shops(con):
             notes.append(f"{key} already running elsewhere")
             continue
