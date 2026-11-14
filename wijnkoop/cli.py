@@ -302,6 +302,21 @@ def cmd_import_results(args):
     print(f"Details: /upload/{u['id']} in WijnKoop")
 
 
+def _log_to_file():
+    """Also keep the log in /data/logs/wijnkoop.log (5 files of 1 MB at most), so it survives an
+    update of the container."""
+    from logging.handlers import RotatingFileHandler
+
+    try:
+        config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(config.LOG_DIR / "wijnkoop.log", maxBytes=1_000_000, backupCount=4,
+                                      encoding="utf-8")
+    except OSError:
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(process)d %(levelname)s %(message)s"))
+    logging.getLogger("wijnkoop").addHandler(handler)
+
+
 def main(argv=None):
     logging.basicConfig(
         level=logging.INFO,
@@ -310,6 +325,7 @@ def main(argv=None):
     )
     # Not a line for every page fetched: WijnKoop logs what matters itself (and every 429 once).
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    _log_to_file()
     parser = argparse.ArgumentParser(prog="wijnkoop")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="create the database").set_defaults(func=cmd_init)

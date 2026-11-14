@@ -11,6 +11,8 @@ from collections import defaultdict
 
 from rapidfuzz import fuzz, process
 
+from .scores import expand
+
 from .deals import line_cost, parse_deal
 from .normalize import norm
 from .reference import award_score
@@ -239,7 +241,15 @@ def search(conn, q: str, limit: int = 40) -> list[dict]:
     q = (q or "").strip()
     if not q:
         return []
-    rows = _rows(conn, f"SELECT {CARD_COLUMNS} FROM best_buys")
+    from .search_index import candidates
+
+    ids = candidates(conn, q)
+    if ids is None:
+        rows = _rows(conn, f"SELECT {CARD_COLUMNS} FROM best_buys")
+    elif ids:
+        rows = _rows(conn, f"SELECT {CARD_COLUMNS} FROM best_buys WHERE offer_id IN ({','.join('?' * len(ids))})", ids)
+    else:
+        rows = []
     choices = {i: norm(f"{r['wine']} {r['producer'] or ''} {r['vintage'] or ''} {r['grapes'] or ''}")
                for i, r in enumerate(rows)}
     hits = process.extract(norm(q), choices, scorer=fuzz.WRatio, limit=limit, score_cutoff=70)
@@ -294,7 +304,9 @@ def wine(conn, wine_id: int) -> dict | None:
         pts = conn.execute("""SELECT seen_on, effective_price_per_75cl FROM price_history WHERE offer_id = ?
                               AND effective_price_per_75cl IS NOT NULL ORDER BY seen_on""",
                            (o["offer_id"],)).fetchall()
-        line = _sparkline(pts)
+        seen = conn.execute("SELECT last_seen FROM offer WHERE id = ?", (o["offer_id"],)).fetchone()
+        # the history keeps only changes: one point per week again, so the line runs flat between them
+        line = _sparkline(expand([tuple(p) for p in pts], seen[0] if seen else None))
         if line:
             history.append({"shop": o["shop"], **line})
     better = []

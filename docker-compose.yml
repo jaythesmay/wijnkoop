@@ -16,3 +16,6 @@ services:
       TZ: Europe/Amsterdam
       WIJNKOOP_RUN_WEEKDAY: "0"   # 0 = Monday
       WIJNKOOP_RUN_HOUR: "1"      # 01:00 at night
+      # Optional: a password for the app (needed only if it can be reached from outside Tailscale).
+      # WIJNKOOP_USER: "wijnkoop"
+      # WIJNKOOP_PASSWORD: "choose-one"

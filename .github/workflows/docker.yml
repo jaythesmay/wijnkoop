@@ -26,11 +26,15 @@ jobs:
         run: |
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
           echo "built=$(TZ=Europe/Amsterdam date '+%-d %b %Y %H:%M')" >> "$GITHUB_OUTPUT"
+          echo "version=$(TZ=Europe/Amsterdam date '+%Y%m%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.name.outputs.image }}:latest
+          # :latest is what Container Station pulls; the dated tag lets you go back to an earlier version
+          tags: |
+            ${{ steps.name.outputs.image }}:latest
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.version }}
           build-args: |
             BUILD_DATE=${{ steps.name.outputs.built }}
             GIT_SHA=${{ github.sha }}

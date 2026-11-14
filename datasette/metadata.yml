@@ -20,6 +20,8 @@ description_html: |-
 databases:
   wijnkoop:
     tables:
+      search_text:
+        hidden: true
       best_buys:
         title: Best buys
         description: >-

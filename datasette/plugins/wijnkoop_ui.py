@@ -21,6 +21,7 @@ from wijnkoop.awards import upload as award_upload
 from wijnkoop.db import BUSY_TIMEOUT
 
 DB = "wijnkoop"
+MAX_UPLOAD = int(os.environ.get("WIJNKOOP_MAX_UPLOAD_MB", "25")) * 1_000_000  # bytes
 
 
 async def _read(datasette, fn, *args):
@@ -168,7 +169,15 @@ async def upload(datasette, request):
             if job:
                 UPLOAD_PROGRESS[job] = {"step": step, "since": since, "filename": filename, **details}
 
+        size = request.headers.get("content-length") or ""
+        if size.isdigit() and int(size) > MAX_UPLOAD:
+            UPLOAD_PROGRESS.pop(job, None)
+            return Response.json({"error": f"This file is larger than {MAX_UPLOAD // 1_000_000} MB. "
+                                           "Save only the results table, or split the file."}, status=413)
         data = await request.post_body()
+        if len(data) > MAX_UPLOAD:
+            UPLOAD_PROGRESS.pop(job, None)
+            return Response.json({"error": f"This file is larger than {MAX_UPLOAD // 1_000_000} MB."}, status=413)
         try:
             report = await _write(datasette, award_upload.import_upload, filename, data, competition,
                                   int(year) if year.isdigit() else None, None, progress)
@@ -414,6 +423,39 @@ async def awards_not_sold(datasette, request):
     data = await _read(datasette, award_wines.not_sold, a.get("q") or "", a.get("colour") or "",
                        a.get("competition") or "", a.get("gold") or "", int(page) if page.isdigit() else 1)
     return await _page(datasette, request, "wk_award_wines.html", "Award wines not in your shops", **data)
+
+
+@hookimpl
+def asgi_wrapper(datasette):
+    """An optional password for the whole app: set WIJNKOOP_PASSWORD (and WIJNKOOP_USER, default
+    "wijnkoop") in docker-compose. Without it the app is open, which is fine at home and over
+    Tailscale; with it the browser asks once and remembers it."""
+    password = os.environ.get("WIJNKOOP_PASSWORD") or ""
+    user = os.environ.get("WIJNKOOP_USER") or "wijnkoop"
+
+    def wrap(app):
+        if not password:
+            return app
+
+        import base64
+        import hmac
+
+        expected = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+
+        async def guarded(scope, receive, send):
+            if scope["type"] != "http":
+                return await app(scope, receive, send)
+            given = dict(scope.get("headers") or []).get(b"authorization", b"").decode("latin-1")
+            if hmac.compare_digest(given, expected):
+                return await app(scope, receive, send)
+            await send({"type": "http.response.start", "status": 401,
+                        "headers": [(b"www-authenticate", b'Basic realm="WijnKoop", charset="UTF-8"'),
+                                    (b"content-type", b"text/plain; charset=utf-8")]})
+            await send({"type": "http.response.body", "body": "WijnKoop: password needed".encode()})
+
+        return guarded
+
+    return wrap
 
 
 @hookimpl

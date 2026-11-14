@@ -209,12 +209,32 @@ MIN_HISTORY_DAYS = 28  # with 4 weeks of our own prices, those count instead of 
 CHEAPEST_MARGIN = 0.05  # "cheapest shop" is a deal only when at least this much cheaper than the next shop
 
 
-def _reference_price(history: list[tuple[str, float]], normal: float | None, today: dt.date):
-    """history: [(seen_on, effective price per 75cl)], oldest first. 90 days of history: their
-    median. 4 weeks: the median of what we saw. Before that: the shop's own normal price (never its
-    struck-through "was" price, which is often a list price nobody paid)."""
+def expand(rows: list[tuple[str, float]], until: str | None, start: str | None = None) -> list[tuple[str, float]]:
+    """Price history keeps a line only when something changed. This gives back one price per week,
+    as if every weekly read had been kept: each price holds from its date until the next line (or
+    until the offer was last seen). start: leave out the weeks before this date."""
+    out = []
+    for i, (day, price) in enumerate(rows):
+        end = rows[i + 1][0] if i + 1 < len(rows) else max(until or day, day)
+        d = dt.date.fromisoformat(day)
+        if start and day < start:  # a price that was already in effect when the window starts
+            d = dt.date.fromisoformat(start)
+        stop = dt.date.fromisoformat(end)
+        last = i + 1 == len(rows)
+        while d < stop or (last and d <= stop):
+            out.append((d.isoformat(), price))
+            d += dt.timedelta(days=7)
+    return out
+
+
+def _reference_price(history: list[tuple[str, float]], normal: float | None, today: dt.date,
+                     first_seen: str | None = None):
+    """history: [(seen_on, effective price per 75cl)] one per week, oldest first (see expand).
+    90 days of history: their median. 4 weeks: the median of what we saw. Before that: the shop's
+    own normal price (never its struck-through "was" price, which is often a list price nobody paid).
+    first_seen: the first day of the offer's history, when history starts later than that."""
     if history:
-        first = dt.date.fromisoformat(history[0][0])
+        first = dt.date.fromisoformat(first_seen or history[0][0])
         days = (today - first).days
         if days >= HISTORY_DAYS:
             since = (today - dt.timedelta(days=HISTORY_DAYS)).isoformat()
@@ -303,20 +323,31 @@ def recompute(con, today: dt.date | None = None):
 
     offers = con.execute(
         """SELECT o.id, o.wine_id, o.shop_id, o.price_per_75cl, o.was_price, o.price, o.volume_cl,
-                  o.effective_price_per_75cl, o.in_stock_online, s.name AS shop,
+                  o.effective_price_per_75cl, o.in_stock_online, o.last_seen, s.name AS shop,
                   s.delivery_cost, s.free_delivery_from,
                   w.name || COALESCE(' ' || w.vintage, '') || ' (' || s.name || ')' AS label, w.colour
            FROM offer o JOIN shop s ON s.id = o.shop_id JOIN wine w ON w.id = o.wine_id
            WHERE o.is_current = 1 AND o.gone_since IS NULL"""
     ).fetchall()
-    history = defaultdict(list)
-    since = (today - dt.timedelta(days=HISTORY_DAYS + 400)).isoformat()
+    # Only what the deal rule needs, for the offers on sale now: the first day of each offer's
+    # history, the lines of the last 90 days, and the line that was in effect when they start.
+    start = (today - dt.timedelta(days=HISTORY_DAYS)).isoformat()
+    live = "SELECT id FROM offer WHERE is_current = 1 AND gone_since IS NULL"
+    first_seen = dict(con.execute(
+        f"SELECT offer_id, MIN(seen_on) FROM price_history WHERE offer_id IN ({live}) GROUP BY offer_id").fetchall())
+    lines = defaultdict(list)
     for r in con.execute(
-        """SELECT offer_id, seen_on, effective_price_per_75cl AS p
-           FROM price_history WHERE seen_on >= ? AND effective_price_per_75cl IS NOT NULL
-           ORDER BY seen_on""", (since,)
-    ):
-        history[r["offer_id"]].append((r["seen_on"], r["p"]))
+        f"""SELECT ph.offer_id, ph.seen_on, ph.effective_price_per_75cl AS p FROM price_history ph
+            JOIN (SELECT offer_id, MAX(seen_on) AS d FROM price_history WHERE seen_on < ? AND offer_id IN ({live})
+                  GROUP BY offer_id) x ON x.offer_id = ph.offer_id AND x.d = ph.seen_on
+            WHERE ph.effective_price_per_75cl IS NOT NULL
+            UNION ALL
+            SELECT offer_id, seen_on, effective_price_per_75cl FROM price_history
+            WHERE seen_on >= ? AND effective_price_per_75cl IS NOT NULL AND offer_id IN ({live})
+            ORDER BY 2""", (start, start)):
+        lines[r[0]].append((r[1], r[2]))
+    last_seen = {o["id"]: o["last_seen"] for o in offers}
+    history = {oid: expand(rows, last_seen.get(oid), start) for oid, rows in lines.items()}
 
     cheapest = defaultdict(list)  # wine_id -> [(effective, shop_id)]
     for o in offers:
@@ -362,7 +393,7 @@ def recompute(con, today: dt.date | None = None):
         bottle = round(eff * (o["volume_cl"] or 75) / 75, 2)
         total6, delivery = order_of_six(bottle, o["delivery_cost"], o["free_delivery_from"])
         normal = o["price_per_75cl"]
-        ref, ref_kind = _reference_price(history.get(o["id"], []), normal, today)
+        ref, ref_kind = _reference_price(history.get(o["id"], []), normal, today, first_seen.get(o["id"]))
         reasons = []
         if ref and eff <= ref * (1 - DEAL_DROP):
             reasons.append(f"{round(100 * (1 - eff / ref))}% below {ref_kind}")
@@ -392,7 +423,9 @@ def recompute(con, today: dt.date | None = None):
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     con.commit()
     from .db import optimize
+    from .search_index import rebuild
 
+    rebuild(con)  # the search box's index of the wines on sale
     optimize(con)
     return {"wines_scored": len(wine_overall), "per_point_pct": round(100 * (math.exp(d) - 1)),
             "fit_wines": n_fit, "rate_pct": rate * 100}
