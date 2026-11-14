@@ -12,6 +12,7 @@ from .fetch import NotAllowed, PoliteClient
 from .bottles import fix_volume
 from .deals import effective_per_75cl, parse_deal
 from .normalize import cuvee_key, norm, split_estate, wine_key
+from .images import image_of
 from .process import process_token
 from .reference import competition_id, parse_award_text
 from .shops import gall
@@ -211,6 +212,8 @@ def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=Non
         effective_price_per_75cl=effective, in_stock_online=stock, awards_count=p.awards_count,
         shop_rating=p.shop_rating, last_seen=today,
     )
+    if getattr(p, "image_url", None):
+        values["image_url"] = p.image_url
 
     current = con.execute(
         "SELECT * FROM offer WHERE shop_id=? AND shop_product_id=? AND is_current=1 ORDER BY id DESC LIMIT 1",
@@ -427,7 +430,10 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     read = no_price = failed_here = 0  # for noticing a shop that changed its site (health.py)
     for i, (url, pid) in enumerate(products, already + 1):
         try:
-            product = shop.parse_product(url, fetch_page(shop, client, url, prefetched, pid))
+            page = fetch_page(shop, client, url, prefetched, pid)
+            product = shop.parse_product(url, page)
+            if not getattr(product, "image_url", None) and isinstance(page, str):
+                product.image_url = image_of(page, url)  # for comparing wines on the data quality page
             read += 1
             if product.price is None:
                 no_price += 1

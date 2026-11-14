@@ -235,3 +235,130 @@ def test_pages(con, tmp_path, monkeypatch):
     assert r.json()["done"] == 1
     assert run.status_code == 302 and started == [1]
     assert sold.status_code == 200 and "Quinta Nova Douro Reserva" in sold.text
+
+
+def test_strip_size():
+    assert quality.strip_size("chateau x magnum") == "chateau x"
+    assert quality.strip_size("chateau x 37 5 cl") == "chateau x"
+    assert quality.strip_size("chateau x 1 5 l") == "chateau x"
+    assert quality.strip_size("chateau x halve fles") == "chateau x"
+    assert quality.strip_size("chateau x") == "chateau x"
+
+
+def _cuvees(con):
+    return {r[0] for r in con.execute("SELECT DISTINCT w.cuvee_id FROM offer o JOIN wine w ON w.id = o.wine_id")}
+
+
+def test_size_only_merges_by_itself_and_can_be_undone(con):
+    _sell(con, "Gall & Gall", 1, "Chateau Montrose Saint-Estephe", producer="Chateau Montrose", vintage="2019",
+          price=12)
+    _sell(con, "Vindict", 2, "Chateau Montrose Saint-Estephe Magnum", producer="Chateau Montrose", vintage="2019",
+          price=26, volume=150.0)
+    assert len(_cuvees(con)) == 2
+    r = quality.run_checks(con, look_for_awards=False)
+    assert r["size_merged"] == 1
+    assert len(_cuvees(con)) == 1  # one wine, a price per bottle size
+    issue = dict(con.execute("SELECT * FROM dq_issue WHERE check_code='size_only'").fetchone())
+    assert issue["state"] == "done" and issue["auto"] == 1 and issue["resolution"] == "merge"
+    assert not _issues(con, "duplicate")  # not also listed as a duplicate
+    view = quality.overview(con, "size_only", "done")
+    assert view["auto_total"] == 1 and view["issues"][0]["can_undo"]
+    # Undo: two wines again, and the next run leaves them apart
+    assert quality.undo(con, [issue["id"]]) == 1
+    assert len(_cuvees(con)) == 2
+    quality.run_checks(con, look_for_awards=False)
+    assert len(_cuvees(con)) == 2
+    assert con.execute("SELECT state, resolution FROM dq_issue WHERE id=?", (issue["id"],)).fetchone()[:] == \
+        ("kept", "undone")
+
+
+def test_size_only_not_for_boxes_or_other_colours(con):
+    _sell(con, "Gall & Gall", 1, "Domaine Y Bourgogne Rouge", producer="Domaine Y")
+    _sell(con, "Vindict", 2, "Domaine Y Bourgogne Rouge 6x75cl", producer="Domaine Y", price=60)
+    _sell(con, "Gall & Gall", 3, "Domaine Z Cuvee", producer="Domaine Z", colour="red")
+    _sell(con, "Vindict", 4, "Domaine Z Cuvee Magnum", producer="Domaine Z", colour="white", volume=150.0)
+    quality.run_checks(con, look_for_awards=False)
+    assert not con.execute("SELECT 1 FROM dq_issue WHERE check_code='size_only'").fetchone()
+
+
+def test_issue_price_and_order(con):
+    cheap = _sell(con, "Gall & Gall", 1, "Quinta A Tinto", producer="Quinta A", price=5)
+    focus = _sell(con, "Gall & Gall", 2, "Quinta B Tinto", producer="Quinta B", price=9.5)
+    dear = _sell(con, "Gall & Gall", 3, "Quinta C Tinto", producer="Quinta C", price=40)
+    assert quality.issue_price(con, [["w", f"/wine/{focus}"], ["w", f"/wine/{dear}"]]) == 9.5
+    assert quality.issue_price(con, [["x", "https://elsewhere"]]) is None
+    for i, w in enumerate((dear, cheap, focus)):
+        con.execute("""INSERT INTO dq_issue (check_code, key, title, links, data, state, price)
+                       VALUES ('colour', ?, ?, ?, '{}', 'open', ?)""",
+                    (f"k{i}", f"t{w}", json.dumps([["w", f"/wine/{w}"]]),
+                     quality.issue_price(con, [["w", f"/wine/{w}"]])))
+    con.commit()
+    view = quality.overview(con)
+    assert [d["price"] for d in view["issues"]] == [9.5, 5, 40]  # €7-15 first, dear ones last
+    assert view["in_focus"] == 1 and view["issues"][0]["in_focus"]
+    only = quality.overview(con, focus=True)
+    assert [d["price"] for d in only["issues"]] == [9.5]
+
+
+def test_compare_cuvees(con):
+    a = _sell(con, "Gall & Gall", 1, "Herdade do Esporao Reserva Tinto", producer="Herdade do Esporao",
+              vintage="2021", price=15)
+    b = _sell(con, "Vindict", 2, "Esporao Reserva Tinto", producer="Esporao", vintage="2021", price=28, volume=150.0)
+    con.execute("UPDATE offer SET image_url='https://img/1.jpg' WHERE wine_id=?", (a,))
+    ca, cb = (con.execute("SELECT cuvee_id FROM wine WHERE id=?", (w,)).fetchone()[0] for w in (a, b))
+    c = quality.compare_cuvees(con, ca, cb)
+    left, right = c["sides"]
+    assert left["image"] == "https://img/1.jpg" and right["image"] is None
+    assert left["sizes"] == "75 cl" and right["sizes"] == "150 cl"
+    assert right["offers"][0]["price_per_75cl"] == 14
+    assert "sizes" in c["diff"] and "producer" in c["diff"] and "vintages" not in c["diff"]
+    assert quality.compare_cuvees(con, ca, 99999) is None
+
+
+def test_image_of():
+    from wijnkoop.images import image_of
+
+    url = "https://shop.nl/wijn/1"
+    assert image_of('<meta property="og:image" content="/img/a.jpg?x=1&amp;y=2">', url) == \
+        "https://shop.nl/img/a.jpg?x=1&y=2"
+    ld = ('<script type="application/ld+json">{"@graph":[{"@type":"Product","image":["//cdn.x/b.png"]}]}</script>'
+          '<meta property="og:image" content="https://shop.nl/logo.png">')
+    assert image_of(ld, url) == "https://cdn.x/b.png"
+    assert image_of('{"title":"X","featured_image":"//cdn.shopify.com/c.jpg"}', url) == "https://cdn.shopify.com/c.jpg"
+    assert image_of('{"title":"X"}', url) is None
+    assert image_of("<html>nothing</html>", url) is None and image_of(None, url) is None
+
+
+def test_save_product_keeps_image(con):
+    p = GallProduct(url="https://shop/1", product_id="1", title="Quinta D Tinto", colour="red", volume_cl=75.0,
+                    price=9.0, in_stock_online=True, specs={}, image_url="https://img/d.jpg")
+    offer_id = save_product(con, _shop(con, "Gall & Gall"), p, TODAY)
+    assert con.execute("SELECT image_url FROM offer WHERE id=?", (offer_id,)).fetchone()[0] == "https://img/d.jpg"
+
+
+def test_quality_page_compare_and_undo(con, tmp_path, monkeypatch):
+    from datasette.app import Datasette
+
+    _sell(con, "Gall & Gall", 1, "Herdade do Esporao Reserva Tinto", producer="Herdade do Esporao", vintage="2021")
+    _sell(con, "Vindict", 2, "Esporao Reserva Tinto", producer="Esporao", vintage="2021", price=12)
+    _sell(con, "Gall & Gall", 3, "Chateau Montrose Saint-Estephe", producer="Chateau Montrose", price=12)
+    _sell(con, "Vindict", 4, "Chateau Montrose Saint-Estephe Magnum", producer="Chateau Montrose", price=26,
+          volume=150.0)
+    quality.run_checks(con, look_for_awards=False)
+    size = con.execute("SELECT id FROM dq_issue WHERE check_code='size_only'").fetchone()[0]
+    monkeypatch.setattr(quality, "recompute_in_background", lambda: None)
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                   template_dir=str(ROOT / "datasette" / "templates"))
+
+    async def run():
+        page = await ds.client.get("/quality?check=duplicate")
+        done = await ds.client.get("/quality?check=size_only&state=done")
+        token = page.cookies.get("ds_csrftoken")
+        r = await ds.client.post("/quality", data={"undo": "1", "ids": str(size), "csrftoken": token},
+                                 cookies={"ds_csrftoken": token}, headers={"x-wk-quick": "1"})
+        return page, done, r
+
+    page, done, r = asyncio.run(run())
+    assert page.status_code == 200 and "Compare side by side" in page.text and 'data-yes="merge"' in page.text
+    assert done.status_code == 200 and "by itself" in done.text and "Undo" in done.text
+    assert r.json() == {"undone": 1}
