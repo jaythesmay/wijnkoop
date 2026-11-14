@@ -471,8 +471,8 @@ def test_check_page(con, tmp_path, monkeypatch):
     home, page, post, after = asyncio.run(run())
     assert "/upload/check" in home.text
     links = page.text[page.text.index('id="links"'):]
-    assert "<th>Estate</th><th>Wine</th><th>Estate</th><th>Wine</th>" in links
-    assert '<td data-label="Estate in the file" class="estate">Bodegas Olarra</td>' in links and "<b>Cerro Anon Crianza</b> 2021" in links
+    assert "<th>In the results file</th><th>In your shops</th>" in links
+    assert "<dt>Estate</dt><dd>Bodegas Olarra</dd>" in links and "<dt>Wine</dt><dd><b>Cerro Anon Crianza</b> 2021" in links
     assert ">Crianza</a> 2021" in links and "€12.00" in links
     assert post.json() == {"saved": True, "verdict": "same", "left": 0}
     assert "Nothing to check" in after.text
