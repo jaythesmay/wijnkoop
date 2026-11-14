@@ -4,7 +4,8 @@ import logging
 import re
 import sqlite3
 
-from . import db
+from . import db, health, incremental
+from .incremental import SitemapRecorder
 from . import pace as pace_of
 from .pace import ShopSaysWait
 from .fetch import NotAllowed, PoliteClient
@@ -357,13 +358,9 @@ def prefetch(shop, client) -> dict:
 
 
 def make_client(shop):
-    """A plain polite client, or a headless browser for shops that need one, at the shop's own pace."""
-    pace = pace_of.normal(shop)
-    if getattr(shop, "NEEDS_BROWSER", False):
-        from .browser import BrowserClient
-
-        return BrowserClient(shop.BASE, min_delay=pace)
-    return PoliteClient(shop.BASE, min_delay=pace)
+    """A polite client at the shop's own pace. (No shop needs a headless browser any more: Wijnvoordeel
+    and Wijnbeurs are read through their product service.)"""
+    return PoliteClient(shop.BASE, min_delay=pace_of.normal(shop))
 
 
 def collect_shop(shop, limit: int | None = None, con=None, resume: bool = True, client=None) -> dict:
@@ -395,7 +392,8 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
         pace_of.start(con, shop, client)
         con.commit()
         log.info("%s: waiting %.0f s between pages", name, client.delay)
-        products = shop.list_products(client)
+        recorder = SitemapRecorder(client)  # notes each product's <lastmod> in the sitemaps
+        products = shop.list_products(recorder)
         prefetched = prefetch(shop, client)
     except ShopSaysWait as exc:
         return _pause(shop, con, run_id, client, exc, ok, failed, "", own_client)
@@ -411,9 +409,21 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
             "SELECT shop_product_id FROM skipped_page WHERE shop_id=? AND seen_on >= ?", (shop_id, skip_since))}
         products = [(u, pid) for u, pid in products if pid not in done]
         log.info("%s: %d pages already read in this run, %d to go", name, total - len(products), len(products))
+    today_date = dt.date.today()
+    full = bool(limit) or bool(prefetched) or incremental.full_due(con, shop.KEY, today_date)
+    carried = 0
+    if not full:
+        # Pages that did not change since they were read: not opened again (see incremental.py)
+        same = incremental.unchanged(con, shop_id, products, recorder.lastmod)
+        if same:
+            carried = incremental.carry_forward(con, shop_id, same, today_date.isoformat())
+            products = [(u, pid) for u, pid in products if pid not in same]
+            log.info("%s: %d pages unchanged since they were read, %d to read", name, len(same), len(products))
     already = total - len(products)
     if skip_since:
         ok = already  # pages read before the interruption count as done
+    else:
+        ok += carried
     con.execute("UPDATE run_log SET note=? WHERE id=?", (f"{already} of {total} pages read", run_id))
     con.commit()
 
@@ -422,9 +432,13 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
     is_wine = getattr(shop, "is_wine_product", None)
     today = dt.date.today().isoformat()
     paused = None
+    read = no_price = failed_here = 0  # for noticing a shop that changed its site (health.py)
     for i, (url, pid) in enumerate(products, already + 1):
         try:
             product = shop.parse_product(url, fetch_page(shop, client, url, prefetched, pid))
+            read += 1
+            if product.price is None:
+                no_price += 1
             if is_wine and not is_wine(product):
                 # glasses, tastings, spirits: remember the page so a resumed run skips it
                 con.execute("INSERT OR REPLACE INTO skipped_page (shop_id, shop_product_id, seen_on) VALUES (?,?,?)",
@@ -445,6 +459,7 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
         except Exception as exc:  # keep going; one bad page must not stop the run
             con.rollback()  # nothing half-saved from this page
             failed += 1
+            failed_here += 1
             log.warning("Failed %s: %s", url, exc)
             # Keep the reason, so the app can show why pages failed without the container's log.
             try:
@@ -458,14 +473,17 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
                         (ok, failed, f"{i} of {total} pages read", run_id))
             con.commit()
             log.info("%s: %d / %d pages done", name, i, total)
+    health.check_run(con, shop, read, no_price, failed_here)
     if paused:
         return _pause(shop, con, run_id, client, paused, ok, failed, f"{i - 1} of {total} pages read; ", own_client)
     if own_client and hasattr(client, "close"):
-        client.close()  # the headless browser, when one was used
+        client.close()
     pace_of.after_run(con, shop, client)
     if not limit and total and failed < total / 2:
         n = mark_gone(con, shop_id, all_ids, today)
         log.info("%s: %d wines are no longer on the site", name, n)
+    if full and not limit:
+        incremental.note_full(con, shop.KEY, today_date)
     con.execute(
         "UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=?, process=NULL WHERE id=?",
         (dt.datetime.now().isoformat(timespec="seconds"), ok, failed, f"{total} of {total} pages read", run_id),

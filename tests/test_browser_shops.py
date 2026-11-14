@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from wijnkoop import collect, db
@@ -15,9 +16,9 @@ def _page(name):
     return (REAL / f"{name}.html").read_text()
 
 
-def test_registered_and_need_a_browser():
+def test_registered_and_no_browser_needed():
     assert SHOPS["wijnvoordeel"] is wijnvoordeel and SHOPS["wijnbeurs"] is wijnbeurs
-    assert wijnvoordeel.NEEDS_BROWSER and wijnbeurs.NEEDS_BROWSER
+    assert not wijnvoordeel.NEEDS_BROWSER and not wijnbeurs.NEEDS_BROWSER
     assert wijnbeurs.SITEMAP == "https://www.wijnbeurs.nl/products.xml"
 
 
@@ -53,31 +54,61 @@ def test_colour_from_name_and_grapes():
     assert wijnvoordeel.medal_from_image("https://x/media/m/u/mundus-vini-goud_2.png?w=1") == "mundus vini goud"
 
 
-class FakeBrowser:
+SERVICE = json.loads((REAL / "wijnvoordeel-service.json").read_text())
+CONFIG = {"public": {"default": {"commerce-endpoint": "https://www.wijnvoordeel.nl/api/x/graphql",
+                                 "headers": {"all": {"Store": "wijnvoordeel_nl"},
+                                             "cs": {"Magento-Store-View-Code": "wijnvoordeel_nl"}}}}}
+SHERRY = "https://www.wijnvoordeel.nl/products/emilio-hidalgo-px-sherry"
+MOZART = "https://www.wijnvoordeel.nl/products/chateau-des-mille-anges-mozart"
+CASE12 = "https://www.wijnvoordeel.nl/products/pierre-baptiste-chardonnay-12-flessen"
+
+
+class FakeService:
+    """The shop as WijnKoop now reads it: sitemap, config.json and the product service."""
     delay = 0
-    closed = False
 
-    def get(self, url):
+    def __init__(self):
+        self.asked, self.headers = [], []
+
+    def get(self, url, headers=None):
+        self.asked.append(url)
+        self.headers.append(headers)
         if url.endswith("products.xml"):
-            return f"<urlset><url><loc>{GAILLARD}</loc></url><url><loc>{TINAZZI}</loc></url></urlset>"
-        return _page("wijnvoordeel-chateau-gaillard" if "gaillard" in url else "wijnvoordeel-tinazzi-rose")
+            return "<urlset>" + "".join(f"<url><loc>{u}</loc></url>" for u in (SHERRY, MOZART, CASE12)) + "</urlset>"
+        if url.endswith("config.json"):
+            return json.dumps(CONFIG)
+        return json.dumps(SERVICE)
 
-    def close(self):
-        self.closed = True
+
+def test_product_service_gives_the_whole_shop_in_one_request():
+    client = FakeService()
+    got = wijnvoordeel.prefetch(client)
+    assert set(got) == {"emilio-hidalgo-px-sherry", "chateau-des-mille-anges-mozart", "pierre-baptiste-chardonnay-12-flessen"}
+    assert len(client.asked) == 2 and "/api/x/graphql?query=" in client.asked[1]
+    assert client.headers[1]["Magento-Store-View-Code"] == "wijnvoordeel_nl" and client.headers[1]["Store"]
+    sherry = wijnvoordeel.parse_product(SHERRY, got["emilio-hidalgo-px-sherry"])
+    assert (sherry.volume_cl, sherry.specs["alcohol"], sherry.in_stock_online) == (50.0, "15 %", True)
+    mozart = wijnvoordeel.parse_product(MOZART, got["chateau-des-mille-anges-mozart"])
+    assert mozart.colour == "red" and mozart.price and mozart.specs["country"]
+    case = wijnvoordeel.parse_product(CASE12, got["pierre-baptiste-chardonnay-12-flessen"])
+    assert case.in_stock_online is False and case.specs.get("presale") == "yes"
 
 
-def test_collect_uses_a_browser_for_these_shops(tmp_path, monkeypatch):
-    fake = FakeBrowser()
+def test_collect_reads_these_shops_without_a_browser(tmp_path, monkeypatch):
+    fake = FakeService()
     monkeypatch.setattr(collect, "make_client", lambda shop: fake)
     con = db.connect(tmp_path / "t.db")
-    assert collect_shop(wijnvoordeel, con=con) == {"ok": 2, "failed": 0}
-    assert fake.closed
-    assert con.execute("SELECT COUNT(*) FROM offer").fetchone()[0] == 2
+    result = collect_shop(wijnvoordeel, con=con)
+    assert result["failed"] == 0 and len(fake.asked) == 3  # sitemap, config.json, one service request
+    assert con.execute("SELECT COUNT(*) FROM offer").fetchone()[0] >= 1
 
 
-def test_make_client_picks_the_browser(monkeypatch):
-    import wijnkoop.browser as browser
+def test_make_client_is_always_plain(monkeypatch):
+    from wijnkoop.fetch import PoliteClient
 
-    made = []
-    monkeypatch.setattr(browser, "BrowserClient", lambda base, **kw: made.append(base) or "browser")
-    assert collect.make_client(wijnbeurs) == "browser" and made == ["https://www.wijnbeurs.nl"]
+    monkeypatch.setattr(PoliteClient, "__init__", lambda self, base, **kw: None)
+    assert isinstance(collect.make_client(wijnbeurs), PoliteClient)
+    from wijnkoop.collect import failure_reason
+
+    assert failure_reason(ValueError("could not convert 'abc' at https://x.nl/a")) == \
+        "ValueError: could not convert 'abc' at <page>"

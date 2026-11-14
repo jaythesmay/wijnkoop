@@ -65,11 +65,16 @@ and open `http://<nas tailscale name>:8001`.
 - Not read: Brander Wines and Decantalo refuse automated visitors, bonimport.nl asks robots to stay
   away (its shop Wijny is read), Beste Spaanse Wijn has no webshop, and Alleen Italiaanse Producten
   has about 22,000 wines (a run would take more than 30 hours).
-- Wijnvoordeel and Wijnbeurs show their prices only after the page's JavaScript ran, so they are
-  read with a headless browser (Chromium, in the image), 20 s apart as their robots.txt asks. It
-  loads only the shop's own site (no images, trackers or cookie banners). Their medals come from
-  the medal images; packages, cases and bag-in-box are skipped; pre-orders count as not in stock.
-  While those two shops are read the browser uses up to about 500 MB of memory on the NAS.
+- Wijnvoordeel and Wijnbeurs show their prices only after the page's JavaScript ran. That JavaScript asks
+  the shop's product service (Adobe Commerce GraphQL, allowed by robots.txt), and WijnKoop asks the same
+  service directly: the whole shop in 4 to 6 requests of 100 products, 20 s apart. No headless browser is
+  needed any more. Their medals come from the medal images; packages and cases are skipped; pre-orders count
+  as not in stock.
+- Reads only pages that changed: most shops date every product in their sitemap (`<lastmod>`); a wine read
+  after its last change is not opened again and counts as seen with the price it had. Every shop is read in
+  full once every 4 weeks anyway (`wijnkoop/incremental.py`).
+- Notices a shop that changed its site: when more than 30% of the pages of a run have no price or cannot be
+  read, Read shops now and the weekly e-mail say so (`wijnkoop/health.py`).
 - Runs every Monday at 01:00 (change with `WIJNKOOP_RUN_WEEKDAY` / `WIJNKOOP_RUN_HOUR`).
 - Personal, non-commercial use only.
 - Keeps every vintage of a shop page apart: a new vintage on the same page starts a new offer.

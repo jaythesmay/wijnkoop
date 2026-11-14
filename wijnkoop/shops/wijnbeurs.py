@@ -12,3 +12,11 @@ SITEMAP = BASE + "/products.xml"
 
 def list_products(client):
     return wijnvoordeel.list_products(client, SITEMAP)
+
+
+def prefetch(client):
+    return wijnvoordeel.prefetch(client, BASE)
+
+
+def fetch_page(client, url):
+    return wijnvoordeel.fetch_page(client, url, BASE)

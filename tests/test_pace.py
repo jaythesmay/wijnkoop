@@ -85,6 +85,13 @@ def test_normal_pace_per_shop():
     assert pace.normal(vanoudsdezwaan) == 10  # answered 429 at 5 s
 
 
+@pytest.fixture(autouse=True)
+def html_pages(monkeypatch):
+    """These tests read Wijnvoordeel's rendered pages, as before it was read through its product service."""
+    monkeypatch.delattr(wijnvoordeel, "prefetch")
+    monkeypatch.delattr(wijnvoordeel, "fetch_page")
+
+
 class PausingClient:
     """The shop answers the second page with "too many requests" the first time."""
     delay = 5
