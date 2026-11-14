@@ -137,8 +137,8 @@ and open `http://<nas tailscale name>:8001`.
 | `python -m wijnkoop awards --match-only` | Only redoes the linking (after changing the matching rules) |
 | `python -m wijnkoop import-results results.xlsx` | Reads an official results file you downloaded (`--competition DWWA --year 2025` if the file does not say) |
 | `python -m wijnkoop mail-setup` | Sets up the weekly e-mail (Gmail app password, stored only in `/data/mail.ini`) and sends a test |
-| `python -m wijnkoop vivino-setup` | Saves a Brave Search API key (only in `/data/brave.ini`) for the Vivino test; `--forget` deletes the key and every stored Vivino rating |
-| `python -m wijnkoop vivino-test --count 10` | Looks up the Vivino rating and price (in euros, when the search result shows one) of the 10 best-scored wines via Brave (never opens vivino.com; at most 900 searches a month) |
+| `python -m wijnkoop vivino-setup` | Saves a Tavily API key (free account at app.tavily.com: 1,000 searches a month, no credit card; stored only in `/data/tavily.ini`) for the Vivino ratings and tests it on 3 wines; `--forget` deletes the key and every stored Vivino rating |
+| `python -m wijnkoop vivino-test --count 10` | Looks up the Vivino rating and price (in euros, when the search result shows one) of the 10 best-scored wines via Tavily search (never opens vivino.com; at most 900 searches a month) |
 | `python -m wijnkoop mail` | Sends the weekly overview e-mail now |
 | `python -m wijnkoop scores` | Recomputes scores, value and deals (also done after every run) |
 

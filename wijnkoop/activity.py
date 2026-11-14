@@ -215,7 +215,7 @@ def queue(con, now: dt.datetime | None = None) -> list[dict]:
     weekly = getattr(vivino, "weekly_due", None)
     try:
         if weekly and weekly(con, now):
-            checks.append(("Vivino ratings (Brave search)", "after the award check"))
+            checks.append(("Vivino ratings (Tavily search)", "after the award check"))
     except Exception:
         pass
     try:

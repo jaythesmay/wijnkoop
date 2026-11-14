@@ -218,21 +218,29 @@ def cmd_vivino_setup(args):
     from . import vivino
 
     if args.forget:
-        if vivino.SETTINGS.exists():
-            vivino.SETTINGS.unlink()
+        for path in (vivino.SETTINGS, vivino.SETTINGS.with_name("brave.ini")):
+            if path.exists():
+                path.unlink()
         con = db.connect()
         con.execute("DELETE FROM vivino_rating")
         con.commit()
-        print("Brave key and all stored Vivino ratings deleted.")
+        print("Search key and all stored Vivino ratings deleted.")
         return
-    print("Vivino ratings via the Brave Search API. Make a key at https://api-dashboard.search.brave.com")
+    print("Vivino ratings via the Tavily search API: free for 1,000 searches a month, no credit card.")
+    print("Make a free account at https://app.tavily.com and copy your API key (it starts with tvly-).")
     print(f"WijnKoop uses at most {vivino.MONTHLY_LIMIT} searches a month.")
-    key = getpass.getpass("Brave API key (not shown while typing): ").strip()
+    key = getpass.getpass("Tavily API key (not shown while typing): ").strip()
     if not key:
         print("No key given; nothing saved.")
         return
     vivino.save_key(key)
-    print(f"Saved in {vivino.SETTINGS}. Test it with: python -m wijnkoop vivino-test")
+    old = vivino.SETTINGS.with_name("brave.ini")
+    if old.exists():
+        old.unlink()  # the Brave key is not used any more
+    print(f"Saved in {vivino.SETTINGS}.")
+    print("A test with the 3 best-scored wines (3 of your free searches):")
+    args.count = 3
+    cmd_vivino_test(args)
 
 
 def cmd_vivino_run(args):
@@ -253,7 +261,7 @@ def cmd_vivino_test(args):
 
     key = vivino.load_key()
     if not key:
-        print("No Brave key yet. Run: python -m wijnkoop vivino-setup")
+        print("No Tavily key yet. Run: python -m wijnkoop vivino-setup")
         return
     con = db.connect()
     ids = vivino.wines_to_test(con, args.count)
@@ -369,7 +377,7 @@ def main(argv=None):
     p.add_argument("--year", type=int)
     p.set_defaults(func=cmd_import_results)
     sub.add_parser("mail-setup", help="set up the weekly e-mail and send a test").set_defaults(func=cmd_mail_setup)
-    p = sub.add_parser("vivino-setup", help="save a Brave Search API key for Vivino ratings")
+    p = sub.add_parser("vivino-setup", help="save a Tavily API key for Vivino ratings (free: 1,000 searches a month)")
     p.add_argument("--forget", action="store_true", help="delete the key and every stored Vivino rating")
     p.set_defaults(func=cmd_vivino_setup)
     p = sub.add_parser("vivino-run", help="look up this week's Vivino ratings now")
