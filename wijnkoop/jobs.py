@@ -193,6 +193,42 @@ def paused_run(con, key: str, now: dt.datetime | None = None) -> dict | None:
     return dict(r) if r and not is_alive(r["process"]) else None
 
 
+def stopped_since(con, key: str, since: dt.datetime) -> bool:
+    """You stopped this shop's latest run, and that run started after `since` (the latest weekly
+    moment): the weekly run must not start it again by itself."""
+    r = con.execute("""SELECT note, started, finished FROM run_log WHERE job=? ORDER BY id DESC LIMIT 1""",
+                    (key,)).fetchone()
+    return bool(r and not r["finished"] and (r["note"] or "").startswith("stopped by you")
+                and r["started"] >= since.isoformat(timespec="seconds"))
+
+
+def _skipped(con, job_id: int) -> set[str]:
+    r = con.execute("SELECT skipped FROM app_job WHERE id=?", (job_id,)).fetchone()
+    return {k for k in ((r["skipped"] if r else None) or "").split(",") if k}
+
+
+def stop_shop(con, key: str) -> str | None:
+    """Stop one shop, not the run it is part of: the shop's own process ends, or, when it is still
+    waiting in a run, that run leaves it out. Its run stays unfinished: "Carry on" goes on from there."""
+    said = None
+    run = running_shops(con).get(key)
+    if run:
+        try:
+            os.kill(int(run["process"].split(":")[0]), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, ValueError):
+            pass
+        con.execute("UPDATE run_log SET process = NULL, note = 'stopped by you' WHERE id=?", (run["id"],))
+        said = "stopped"
+    for j in live_jobs(con):
+        keys = j["shops"].split(",")
+        if key in keys and key not in _skipped(con, j["id"]):
+            con.execute("UPDATE app_job SET skipped = TRIM(COALESCE(skipped, '') || ',' || ?, ',') WHERE id=?",
+                        (key, j["id"]))
+            said = said or "left out"
+    con.commit()
+    return said
+
+
 def resumable_run(con, key: str, now: dt.datetime | None = None) -> dict | None:
     """The shop's run that broke off (its process is gone) and will be carried on by itself:
     newer than its last finished run, less than RESUME_DAYS old, and not stopped by you."""
@@ -243,7 +279,10 @@ def shop_status(con, now: dt.datetime | None = None) -> dict:
     running = running_shops(con)
     queued = {}
     for j in jobs:
+        skipped = {k for k in (j.get("skipped") or "").split(",") if k}
         for key in j["shops"].split(","):
+            if key in skipped:
+                continue
             done = con.execute("SELECT 1 FROM run_log WHERE job=? AND finished >= ? LIMIT 1",
                                (key, j["requested"])).fetchone()
             if key not in running and not done:
@@ -454,12 +493,19 @@ def run_job(con, job_id: int, collect=None, start=None, poll: float = 5) -> list
             if code is None:
                 continue
             del children[key]
+            last = con.execute("SELECT note FROM run_log WHERE job=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
             if code == 0:
                 done.append(key)
+            elif last and (last["note"] or "").startswith("stopped by you"):
+                notes.append(f"{key} stopped by you")
             else:
                 notes.append(f"{key} failed: {log_failure.get(key) or f'exit {code}'}")
         started = False
         for key in list(pending):
+            if key in _skipped(con, job_id):
+                pending.remove(key)
+                notes.append(f"{key} stopped by you")
+                continue
             if con.execute("SELECT 1 FROM run_log WHERE job=? AND finished >= ? LIMIT 1", (key, requested)).fetchone():
                 pending.remove(key)  # read already, before a restart broke this run off
                 continue

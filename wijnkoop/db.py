@@ -473,7 +473,8 @@ def _backup(con, path, version):
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
     "run_log": [("process", "TEXT"), ("wait_until", "TEXT")],
-    "app_job": [("source", "TEXT")],  # 'weekly': the scheduler's run; NULL: started with a button
+    "app_job": [("source", "TEXT"),  # 'weekly': the scheduler's run; NULL: started with a button
+                ("skipped", "TEXT")],  # shops of the run you stopped one by one
     # The wine's own name, without the estate (which is in producer): "Reserva Tinto" of Esporao
     "cuvee": [("wine_name", "TEXT"),
               ("manual_is_wine", "INTEGER")],  # set on the data quality page: wins over the shop

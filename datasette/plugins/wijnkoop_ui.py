@@ -420,6 +420,9 @@ async def update(datasette, request):
         if post.get("stop"):
             await _write(datasette, jobs.stop_job, int(post["stop"]))
             return Response.redirect("/update")
+        if post.get("stop_shop"):
+            await _write(datasette, jobs.stop_shop, post["stop_shop"])
+            return Response.redirect("/update")
         if post.get("vivino"):
             st = await _read(datasette, vivino.status)
             said = ("busy" if st["running"] else "nokey" if not st["has_key"] else
