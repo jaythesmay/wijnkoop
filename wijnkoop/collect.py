@@ -281,7 +281,8 @@ def _open_run(con, job: str, resume: bool):
             con.execute("UPDATE run_log SET process=? WHERE id=?", (process_token(), row["id"]))
             return row["id"], row["started"][:10], row["pages_ok"] or 0, row["pages_failed"] or 0
     # Older unfinished runs will never be resumed: mark them.
-    con.execute("UPDATE run_log SET note='interrupted' WHERE job=? AND finished IS NULL", (job,))
+    con.execute("""UPDATE run_log SET note='broke off; not carried on, a later run read the shop again', process=NULL
+                   WHERE job=? AND finished IS NULL""", (job,))
     started = dt.datetime.now().isoformat(timespec="seconds")
     run_id = con.execute("INSERT INTO run_log (job, started, process) VALUES (?, ?, ?)",
                          (job, started, process_token())).lastrowid

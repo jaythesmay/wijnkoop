@@ -69,8 +69,38 @@ def test_what_makes_sense(con):
     assert s["state"] == "running" and s["advice"] == "40 of 900 pages read"
     _run(con, "henribloem", hours_ago=1, finished=False, process=_dead_token(), note="40 of 900 pages read")
     s = _state(con, "henribloem")
-    assert s["state"] == "useful" and "carries on" in s["advice"]
-    assert set(jobs.shop_status(con, NOW)["useful"]) == set(SHOPS) - {"gall", "vinocom"}
+    assert s["state"] == "resuming" and "carries on by itself" in s["advice"]  # a restart broke it off
+    _run(con, "okhuysen", hours_ago=1, finished=False, note="stopped by you")
+    s = _state(con, "okhuysen")
+    assert s["state"] == "useful" and "you stopped" in s["advice"] and s["carry_on"]
+    assert set(jobs.shop_status(con, NOW)["useful"]) == set(SHOPS) - {"gall", "vinocom", "henribloem"}
+
+
+def test_broken_runs_carry_on_by_themselves(con, monkeypatch):
+    # The weekly run of this week read Gall; then a run from the app broke off (an update)
+    _run(con, "gall", hours_ago=24 * 2)
+    _run(con, "gall", hours_ago=2, finished=False, process=_dead_token(), note="reading")
+    assert jobs.resumable_run(con, "gall", NOW) and cli.run_is_due(con, NOW, "gall")
+    # stopped with the button: not by itself
+    con.execute("UPDATE run_log SET note='stopped by you' WHERE finished IS NULL")
+    assert not jobs.resumable_run(con, "gall", NOW) and not cli.run_is_due(con, NOW, "gall")
+    # too old to carry on
+    con.execute("UPDATE run_log SET note='reading' WHERE finished IS NULL")
+    assert not jobs.resumable_run(con, "gall", NOW + dt.timedelta(days=9))
+
+    # A run from the app whose process died is started again, and skips what it had read
+    monkeypatch.setattr(jobs.dt, "datetime", type("D", (dt.datetime,), {"now": staticmethod(lambda: NOW)}))
+    monkeypatch.setattr("wijnkoop.awards.importer.match_awards", lambda con: None)
+    job_id = con.execute("INSERT INTO app_job (shops, requested, process) VALUES ('vindict,vinocom', ?, ?)",
+                         ((NOW - dt.timedelta(hours=3)).isoformat(timespec="seconds"), _dead_token())).lastrowid
+    _run(con, "vindict", hours_ago=1)  # read before the restart
+    jobs.close_dead_jobs(con)  # the page does this: it must not close a broken-off run
+    assert [j["id"] for j in jobs.shop_status(con, NOW)["dead_jobs"]] == [job_id]
+    started = []
+    assert jobs.resume_dead_jobs(con, start=started.append) == [job_id] == started
+    read = []
+    jobs.run_job(con, job_id, lambda shop, con: read.append(shop.KEY))
+    assert read == ["vinocom"]
 
 
 def test_request_leaves_out_busy_and_fresh_shops(con, monkeypatch):
@@ -142,6 +172,8 @@ def test_update_page(con, tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "launch", launched.append)
     monkeypatch.setattr(jobs, "SOON_HOURS", 0)  # whatever day the test runs
     _run(con, "gall", hours_ago=24 * 6, now=dt.datetime.now())
+    _run(con, "vindict", hours_ago=1, finished=False, process=_dead_token(), now=dt.datetime.now())  # broke off
+    _run(con, "vinocom", hours_ago=1, finished=False, note="stopped by you", now=dt.datetime.now())
     con.close()
     ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
                    template_dir=str(ROOT / "datasette" / "templates"))
@@ -156,6 +188,8 @@ def test_update_page(con, tmp_path, monkeypatch):
 
     page, r, after = asyncio.run(run())
     assert page.status_code == 200 and "Read now" in page.text and "Gall &amp; Gall" in page.text
+    assert "Going on now" in page.text and "carries on soon" in page.text and "carries on by itself" in page.text
+    assert "Carry on</button>" in page.text and 'http-equiv="refresh"' in page.text
     assert r.status_code == 302 and "started=gall" in r.headers["location"]
     assert len(launched) == 1
     assert "Going on now" in after.text and "Started: Gall &amp; Gall" in after.text

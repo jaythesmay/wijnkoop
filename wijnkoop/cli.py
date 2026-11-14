@@ -97,8 +97,10 @@ def run_is_due(con, now: dt.datetime, job: str = "gall") -> bool:
     """Due when no run of this shop has finished since the latest scheduled moment.
 
     This also catches up on a run that was missed because the NAS was off,
-    and resumes a run that was interrupted.
+    and carries on a run that broke off (a restart or an update), also one started from the app.
     """
+    if jobs.resumable_run(con, job, now):
+        return True
     row = con.execute(
         "SELECT 1 FROM run_log WHERE job=? AND finished IS NOT NULL AND started >= ? LIMIT 1",
         (job, _slot(now).isoformat(timespec="seconds")),
@@ -125,6 +127,9 @@ def cmd_scheduler(args):
         now = dt.datetime.now()
         con = db.connect()
         try:
+            if jobs.resume_dead_jobs(con):  # runs from the app that a restart broke off
+                time.sleep(30)  # let them claim their shops first
+                continue
             busy = jobs.running_shops(con)  # a run started from the app
             due = [key for key in SHOPS
                    if run_is_due(con, now, key) and key not in busy and jobs.slot_free(con, key)]
