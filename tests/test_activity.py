@@ -61,6 +61,42 @@ def test_activity_pages(tmp_path):
     assert {"sample", "machine", "files", "work"} <= set(d) and isinstance(d["work"]["queue"], list)
 
 
+def test_container_log_leaves_out_requests_that_went_well(tmp_path, monkeypatch):
+    import logging
+
+    from datasette.app import Datasette
+
+    db.connect(tmp_path / "wijnkoop.db").close()
+    root = Path(__file__).parent.parent
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(root / "datasette" / "plugins"),
+                   template_dir=str(root / "datasette" / "templates"))
+    asyncio.run(ds.invoke_startup())
+    seen = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    access = logging.getLogger("uvicorn.access")
+    access.addHandler(handler := Keep())
+    access.setLevel(logging.INFO)
+    fmt = '%s - "%s %s HTTP/%s" %d'
+    try:
+        for status in (200, 302, 404, 500):
+            access.info(fmt, "192.168.1.5:5000", "GET", "/activity.json", "1.1", status)
+        assert seen == ['192.168.1.5:5000 - "GET /activity.json HTTP/1.1" 404',
+                        '192.168.1.5:5000 - "GET /activity.json HTTP/1.1" 500']
+        monkeypatch.setenv("WIJNKOOP_ACCESS_LOG", "all")
+        access.info(fmt, "192.168.1.5:5000", "GET", "/update", "1.1", 200)
+        assert seen[-1].endswith('"GET /update HTTP/1.1" 200')
+        monkeypatch.setenv("WIJNKOOP_ACCESS_LOG", "none")
+        access.info(fmt, "192.168.1.5:5000", "GET", "/update", "1.1", 500)
+        assert len(seen) == 3
+        assert sum(type(f).__name__ == "QuietAccessLog" for f in access.filters) == 1
+    finally:
+        access.removeHandler(handler)
+
+
 def test_activity_and_read_shops_now_agree(tmp_path):
     """Loes's case: a run of three shops; Vino.com is being read, Colaris and Vanouds de Zwaan were
     paused by the shops (HTTP 429). Both pages say the same: one working, two paused."""

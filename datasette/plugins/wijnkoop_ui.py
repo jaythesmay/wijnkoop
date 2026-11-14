@@ -492,6 +492,40 @@ async def awards_not_sold(datasette, request):
     return await _page(datasette, request, "wk_award_wines.html", "Award wines not in your shops", **data)
 
 
+class QuietAccessLog:
+    """Leaves the "GET /activity HTTP/1.1 200 OK" lines out of the container's log: the pages
+    refresh themselves every few seconds, so these lines hid what WijnKoop was really doing.
+    WIJNKOOP_ACCESS_LOG in docker-compose: "errors" (default: only answers of 400 and up),
+    "all" (every request, as before) or "none"."""
+
+    def filter(self, record) -> bool:
+        mode = (os.environ.get("WIJNKOOP_ACCESS_LOG") or "errors").strip().lower()
+        if mode == "all":
+            return True
+        if mode == "none":
+            return False
+        try:
+            return int(record.args[4]) >= 400  # uvicorn: client, method, path, http version, status
+        except (TypeError, IndexError, ValueError):
+            return True
+
+
+def quiet_access_log():
+    import logging
+
+    access = logging.getLogger("uvicorn.access")
+    if not any(type(f).__name__ == "QuietAccessLog" for f in access.filters):  # also when loaded twice
+        access.addFilter(QuietAccessLog())
+
+
+quiet_access_log()  # before the server starts; a filter stays when uvicorn sets up its logging
+
+
+@hookimpl
+def startup(datasette):
+    quiet_access_log()
+
+
 @hookimpl
 def asgi_wrapper(datasette):
     """An optional password for the whole app: set WIJNKOOP_PASSWORD (and WIJNKOOP_USER, default
