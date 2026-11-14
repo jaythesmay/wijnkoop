@@ -190,6 +190,10 @@ async def upload_report(datasette, request):
     upload_id = int(request.url_vars["upload_id"])
     if request.method == "POST":
         post = await request.post_vars()
+        if post.get("verdict") in ("same", "other") and post.get("award", "").isdigit() and post.get("wine", "").isdigit():
+            await _write(datasette, award_upload.judge_match, upload_id, int(post["award"]), int(post["wine"]),
+                         post["verdict"] == "same")
+            return Response.redirect(f"/upload/{upload_id}#a{post['award']}")
         if post.get("delete"):
             await _write(datasette, award_upload.delete_upload, upload_id)
         return Response.redirect("/upload")

@@ -7,8 +7,15 @@ data when it has it, otherwise the snippet text. Only prices in euros are kept.
 
 - The key lives in /data/brave.ini (written by "python -m wijnkoop vivino-setup"), never in code.
 - At most MONTHLY_LIMIT searches a month, so the free monthly credit is never exceeded.
-- The Vivino rating (1-5 stars from the public) is kept apart from the award score: it is
-  shown next to it, not mixed in.
+- Every week the scheduler looks up at most WEEKLY wines (within the monthly limit): wines on the
+  watchlist or in the order first, then wines on sale without any award, then the best scored.
+  A rating is looked up again after RECHECK_DAYS.
+- The Vivino rating (1-5 stars from the public) counts in the score as points = 50 + 10 x stars
+  (4.0 is 90). How much it weighs depends on how many people rated it (Loes's rule):
+  many ratings for this vintage: as much as a big critic (FULL); few for this vintage but many
+  for the wine's other vintages or for the wine as a whole: a bit less (LESS); few everywhere:
+  very lightly (LIGHT); under MIN_RATINGS: not at all. Never as "gold or better".
+- The price is shown as a reference, not as an offer: it cannot be ordered through WijnKoop.
 - Brave's terms say search results may not be kept after the API agreement ends: delete the
   vivino_rating table (or run "vivino-setup --forget") when the key is cancelled.
 """
@@ -27,6 +34,11 @@ SETTINGS = config.DATA_DIR / "brave.ini"
 ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 MONTHLY_LIMIT = int(os.environ.get("WIJNKOOP_VIVINO_MONTHLY_LIMIT", "900"))
 MIN_MATCH = 80
+WEEKLY = int(os.environ.get("WIJNKOOP_VIVINO_WEEKLY", "200"))
+RECHECK_DAYS = 180
+MANY = 250          # ratings: "many"
+FULL, LESS, LIGHT = 1.0, 0.6, 0.15
+MIN_RATINGS = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS vivino_rating (
@@ -40,7 +52,8 @@ CREATE TABLE IF NOT EXISTS vivino_rating (
     how TEXT,                  -- 'structured', 'snippet' or 'no result'
     snippet TEXT,
     checked_on TEXT,
-    price REAL                 -- euros per bottle as the search result showed it, NULL when none
+    price REAL,                -- euros per bottle as the search result showed it, NULL when none
+    rating_vintage INTEGER     -- the vintage the rating is for; NULL: the wine as a whole (all vintages)
 );
 CREATE TABLE IF NOT EXISTS vivino_usage (month TEXT PRIMARY KEY, searches INTEGER NOT NULL DEFAULT 0);
 """
@@ -51,6 +64,8 @@ def ensure_tables(con):
     cols = {r[1] for r in con.execute("PRAGMA table_info(vivino_rating)")}
     if "price" not in cols:  # databases from before prices were read
         con.execute("ALTER TABLE vivino_rating ADD COLUMN price REAL")
+    if "rating_vintage" not in cols:
+        con.execute("ALTER TABLE vivino_rating ADD COLUMN rating_vintage INTEGER")
 
 
 def save_key(key: str, path=None):
@@ -176,9 +191,11 @@ def candidates(result: dict) -> list[dict]:
             rating, count = _rating_from_text(text)
             how = "snippet" if rating else None
         price = _price_from_structured(r) or _price_from_text(text)
+        # A page of one vintage says so in its address (?year=2020) or its title
+        year = re.search(r"[?&]year=((?:19|20)\d{2})\b", url) or re.search(r"\b((?:19|20)\d{2})\b", title)
         out.append({"title": title, "url": url.split("?")[0], "rating": rating,
                     "ratings_count": int(count) if count else None, "how": how, "snippet": text[:300],
-                    "price": price})
+                    "price": price, "vintage": int(year.group(1)) if year else None})
     return out
 
 
@@ -220,11 +237,12 @@ def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = No
     match, score = best_match(name, candidates(result))
     row = {"wine_id": wine_id, "wine": f"{name} {vintage or ''}".strip(), "rating": None, "ratings_count": None,
            "vivino_title": None, "vivino_url": None, "match_score": round(score, 1), "how": "no result",
-           "snippet": None, "checked_on": (today or dt.date.today()).isoformat(), "price": None}
+           "snippet": None, "checked_on": (today or dt.date.today()).isoformat(), "price": None,
+           "rating_vintage": None}
     if match:
         row.update(rating=match["rating"], ratings_count=match["ratings_count"], vivino_title=match["title"],
                    vivino_url=match["url"], how=match["how"] or "no rating in result", snippet=match["snippet"],
-                   price=match["price"])
+                   price=match["price"], rating_vintage=match.get("vintage"))
     con.execute(f"INSERT OR REPLACE INTO vivino_rating ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
                 tuple(row.values()))
     con.commit()
@@ -238,6 +256,98 @@ def wines_to_test(con, count: int) -> list[int]:
         """SELECT b.wine_id FROM best_buys b
            WHERE b.score IS NOT NULL AND b.wine_id NOT IN (SELECT wine_id FROM vivino_rating)
            GROUP BY b.wine_id ORDER BY MAX(b.score) DESC LIMIT ?""", (count,))]
+
+
+def points(rating: float | None) -> float | None:
+    """1-5 stars to the 100-point scale: 3.5 -> 85, 4.0 -> 90, 4.5 -> 95."""
+    return round(50 + 10 * rating, 1) if rating else None
+
+
+def counted(con, wine_id: int | None = None) -> list[dict]:
+    """The Vivino ratings that count in the score, with their weight and why."""
+    ensure_tables(con)
+    rows = con.execute(
+        """SELECT v.wine_id, v.rating, v.ratings_count, v.rating_vintage, w.vintage, w.cuvee_id,
+                  (SELECT MAX(o.ratings_count) FROM vivino_rating o JOIN wine ow ON ow.id = o.wine_id
+                    WHERE ow.cuvee_id = w.cuvee_id AND o.wine_id != v.wine_id AND o.rating IS NOT NULL) AS others
+           FROM vivino_rating v JOIN wine w ON w.id = v.wine_id
+           WHERE v.rating BETWEEN 1 AND 5 AND (? IS NULL OR v.wine_id = ?)""", (wine_id, wine_id)).fetchall()
+    out = []
+    for wid, rating, n, rating_vintage, vintage, _, others in rows:
+        n, others = n or 0, others or 0
+        this_vintage = bool(rating_vintage) and rating_vintage == vintage
+        if this_vintage and n >= MANY:
+            weight, why = FULL, f"{n:,} ratings for this vintage"
+        elif n >= MANY or others >= MANY:
+            weight, why = LESS, ("few ratings for this vintage, many for other vintages" if this_vintage
+                                 else f"{max(n, others):,} ratings, not for this vintage alone")
+        elif max(n, others) >= MIN_RATINGS:
+            weight, why = LIGHT, f"only {max(n, others):,} ratings"
+        else:
+            continue
+        out.append({"wine_id": wid, "points": points(rating), "weight": weight, "why": why,
+                    "label": f"Vivino {rating:.1f} ({n:,} ratings)"})
+    return out
+
+
+def wines_to_look_up(con, count: int, today: dt.date | None = None) -> list[int]:
+    """Wines on sale to look up this week, most useful first: on the watchlist or in the order,
+    then without any award (Vivino is the only opinion there), then the best scored. A wine
+    already looked up comes back after RECHECK_DAYS."""
+    ensure_tables(con)
+    since = ((today or dt.date.today()) - dt.timedelta(days=RECHECK_DAYS)).isoformat()
+    return [r[0] for r in con.execute(
+        """SELECT w.id FROM wine w
+           LEFT JOIN wine_score ws ON ws.wine_id = w.id
+           WHERE w.id IN (SELECT wine_id FROM offer WHERE is_current = 1 AND gone_since IS NULL)
+             AND w.id NOT IN (SELECT wine_id FROM vivino_rating WHERE checked_on >= ?)
+           ORDER BY (w.id IN (SELECT wine_id FROM watch)
+                     OR w.id IN (SELECT o.wine_id FROM order_item i JOIN offer o ON o.id = i.offer_id)) DESC,
+                    (COALESCE(ws.n_awards, 0) = 0) DESC, COALESCE(ws.overall, 0) DESC, w.id
+           LIMIT ?""", (since, count))]
+
+
+def weekly_due(con, now: dt.datetime) -> bool:
+    if not load_key():
+        return False
+    row = con.execute("SELECT MAX(started) FROM run_log WHERE job='vivino' AND finished IS NOT NULL").fetchone()
+    return not row[0] or (now - dt.datetime.fromisoformat(row[0])).days >= 7
+
+
+def run_weekly(con, key: str | None = None, client=None, today: dt.date | None = None) -> dict:
+    """Look up this week's wines. Stops at the monthly limit or when Brave refuses the key."""
+    import logging
+
+    log = logging.getLogger("wijnkoop")
+    key = key or load_key()
+    ensure_tables(con)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    run_id = con.execute("INSERT INTO run_log (job, started) VALUES ('vivino', ?)", (now,)).lastrowid
+    con.commit()
+    room = max(0, min(WEEKLY, MONTHLY_LIMIT - searches_this_month(con, today)))
+    found = failed = done = 0
+    note = None
+    client = client or httpx.Client(timeout=20)
+    for wine_id in wines_to_look_up(con, room, today) if key else []:
+        try:
+            row = look_up(con, key, wine_id, client, today)
+        except httpx.HTTPStatusError as e:
+            failed += 1
+            if e.response.status_code in (401, 403, 429):  # wrong key, or the credit is used up
+                note = f"Brave answered {e.response.status_code}; stopped"
+                break
+            continue
+        except (httpx.HTTPError, RuntimeError) as e:
+            failed += 1
+            log.warning("Vivino look-up of wine %s failed: %s", wine_id, e)
+            continue
+        done += 1
+        found += row["rating"] is not None
+    con.execute("UPDATE run_log SET finished=?, pages_ok=?, pages_failed=?, note=? WHERE id=?",
+                (dt.datetime.now().isoformat(timespec="seconds"), done, failed,
+                 note or f"{found} of {done} wines got a Vivino rating", run_id))
+    con.commit()
+    return {"looked_up": done, "rated": found, "failed": failed}
 
 
 def search_link(name: str, vintage=None) -> str:
