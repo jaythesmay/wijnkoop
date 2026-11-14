@@ -1,6 +1,6 @@
 {% extends "wk_base.html" %}
 {% block content %}
-{% set anything = jobs or scheduler_runs or resuming or dead_jobs or paused %}
+{% set anything = jobs or scheduler_runs or resuming or dead_jobs or paused or vivino.running or vivino_said == "started" %}
 {% if anything %}<script>
 // Refresh every 30 seconds while something goes on, but not while you are changing a number below.
 var wkTouched = false;
@@ -40,6 +40,9 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
   <span class="pill v-fair">starts again soon</span>
   <div class="meta">Asked {{ j.requested.replace('T', ' ')[:16] }}; a restart or update broke it off. The scheduler starts it again within 10 minutes, without the shops it had read.</div></td><td></td></tr>
 {% endfor %}
+{% if vivino.running %}
+<tr><td>Vivino ratings <span class="pill v-top">looking up</span><div class="meta">{{ vivino.running.pages_ok or 0 }}{% if vivino.running.note and vivino.running.note.startswith('looking up ') %} of {{ vivino.running.note[11:].split(' ')[0] }}{% endif %} wines so far · <a href="#vivino">details</a></div></td><td></td></tr>
+{% endif %}
 {% for j in jobs %}
 <tr>
   <td>{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% if s.state == 'running' %} <span class="pill v-top">reading</span>{% elif s.state == 'queued' %} <span class="pill v-fair">waiting</span>{% else %} <span class="pill v-good">done</span>{% endif %}{% endfor %}{% if not loop.last %} · {% endif %}{% endfor %}
@@ -83,6 +86,38 @@ A shop that answers “too many requests” (HTTP 429) is paused for a few hours
 </tr>
 {% endfor %}
 </table></div>
+<h2 id="vivino">Vivino ratings</h2>
+{% if vivino_said == 'started' %}<div class="hint ok">Started: the Vivino ratings are looked up in the background. This page shows how far it is.</div>{% endif %}
+{% if vivino_said == 'busy' %}<div class="hint">The Vivino look-up is running already.</div>{% endif %}
+{% if vivino_said == 'full' %}<div class="hint">Not started: the {{ vivino.limit }} searches of {{ vivino.month }} are used. It carries on next month.</div>{% endif %}
+{% if vivino_said == 'nokey' %}<div class="hint">Not started: there is no Brave key yet.</div>{% endif %}
+<div class="panel"><table class="list">
+<tr>
+  <td><b>Vivino ratings</b> <span class="small muted">via Brave search, never vivino.com itself</span>
+    {% if not vivino.has_key %}
+    <div class="meta">Not set up: there is no Brave key yet. In Container Station, open the terminal of the WijnKoop container and type <code>python -m wijnkoop vivino-setup</code>.</div>
+    {% else %}
+    <div class="meta">{% if vivino.running %}<span class="pill v-top">looking up</span> {{ vivino.running.pages_ok or 0 }}{% if vivino.running.note and vivino.running.note.startswith('looking up ') %} of {{ vivino.running.note[11:].split(' ')[0] }}{% endif %} wines so far, started {{ vivino.running.started.replace('T', ' ')[11:16] }}
+      {% elif vivino.last %}Last look-up {{ vivino.last.started.replace('T', ' ')[:16] }}: {{ vivino.last.note }}{% if vivino.last.pages_failed %}, {{ vivino.last.pages_failed }} failed{% endif %}
+      {% else %}Not looked up yet.{% endif %}</div>
+    {% if vivino.next %}<div class="meta">Next by itself: {{ vivino.next }}, up to {{ vivino.weekly }} wines a week.</div>{% endif %}
+    {% endif %}
+    <div class="meta">Searches in {{ vivino.month }}: <b>{{ vivino.used }}</b> of {{ vivino.limit }}{% if vivino.used >= vivino.limit %} (all used; more next month){% endif %}.</div>
+    <div class="meta">{{ vivino.rated }} wine{{ 's' if vivino.rated != 1 }} with a Vivino rating ({{ vivino.checked }} looked up). {{ vivino.waiting }} wine{{ 's' if vivino.waiting != 1 }} on sale still to look up, or looked up over half a year ago.</div></td>
+  <td class="num">
+    {% if vivino.has_key and not vivino.running %}
+    <form method="post" action="/update#vivino">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="vivino" value="1">
+      <button type="submit"{% if not vivino.room or not vivino.waiting %} disabled{% endif %}>Look up now</button>
+      <div class="meta">{% if not vivino.room %}no searches left this month{% elif vivino.waiting %}up to {{ [vivino.room, vivino.waiting]|min }} wines{% else %}nothing to look up{% endif %}</div>
+    </form>
+    {% endif %}
+  </td>
+</tr>
+</table></div>
+<p class="small muted">A look-up now counts as this week's: the weekly one then comes a week later, so the {{ vivino.limit }} searches a month are never exceeded.</p>
+
 <h2 id="limits">At the same time</h2>
 <form method="post" action="/update" id="limits-form" class="panel" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
   <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">

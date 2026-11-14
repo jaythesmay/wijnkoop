@@ -16,7 +16,7 @@ from datasette import hookimpl
 from datasette.utils.asgi import Response
 from markupsafe import Markup
 
-from wijnkoop import award_wines, jobs, personal, quality, ui
+from wijnkoop import award_wines, jobs, personal, quality, ui, vivino
 from wijnkoop.bottles import bottle_size
 from wijnkoop.awards import upload as award_upload
 from wijnkoop.db import BUSY_TIMEOUT
@@ -420,6 +420,13 @@ async def update(datasette, request):
         if post.get("stop"):
             await _write(datasette, jobs.stop_job, int(post["stop"]))
             return Response.redirect("/update")
+        if post.get("vivino"):
+            st = await _read(datasette, vivino.status)
+            said = ("busy" if st["running"] else "nokey" if not st["has_key"] else
+                    "full" if not st["room"] else "started")
+            if said == "started":
+                vivino.start_in_background()
+            return Response.redirect(f"/update?vivino={said}#vivino")
         if post.get("limits"):
             # A file next to the database, not a table: no waiting for a run that is saving.
             saved = await _read(datasette, jobs.set_limits, post.get("max_runs"), post.get("max_browser_runs"))
@@ -440,8 +447,10 @@ async def update(datasette, request):
     names = {s["key"]: s["name"] for s in status["shops"]}
     said = {k: [names.get(x, x) for x in (request.args.get(k) or "").split(",") if x]
             for k in ("started", "busy", "skipped")}
+    viv = await _read(datasette, vivino.status)
     return await _page(datasette, request, "wk_update.html", "Read shops now", said=said,
-                       saved=request.args.get("saved"), **status)
+                       saved=request.args.get("saved"), vivino=viv, vivino_said=request.args.get("vivino"),
+                       **status)
 
 
 async def quality_page(datasette, request):
