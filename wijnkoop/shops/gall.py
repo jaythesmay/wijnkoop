@@ -72,6 +72,7 @@ class GallProduct:
     expert_awards: list = field(default_factory=list)  # [(source, result)], e.g. ("IWSC 2024", "Zilver met 90 punten")
     specs: dict = field(default_factory=dict)
     image_url: str | None = None          # the bottle photo at the shop (images.image_of)
+    vivino: tuple | None = None           # (stars, number of ratings) the shop quotes (vivino.in_page)
 
     @property
     def is_wine(self) -> bool:

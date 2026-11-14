@@ -169,6 +169,48 @@ def _mention(text: str) -> tuple[float | None, int | None]:
     return None, None
 
 
+def in_page(page: str | None) -> tuple[float, int | None] | None:
+    """The Vivino rating a shop quotes in its own product description ("Vivino 4,1"), from the
+    page a shop run reads anyway: no search needed. Only the wine's own description (the shop's
+    product JSON, or the page's description meta and JSON-LD), not the rest of the page, where
+    other wines may be shown with theirs."""
+    import html
+    import json
+
+    if not page or "vivino" not in page.lower():
+        return None
+    texts = []
+    if page.lstrip()[:1] == "{":
+        try:
+            d = json.loads(page)
+            texts.append(str(d.get("description") or d.get("body_html") or ""))
+        except ValueError:
+            return None
+    else:
+        texts += re.findall(r"""<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']*)""",
+                            page, re.I)
+        for block in re.findall(r"""<script[^>]+application/ld\+json[^>]*>(.*?)</script>""", page, re.I | re.S):
+            texts += re.findall(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', block)
+    for t in texts:
+        rating, count = _mention(re.sub(r"<[^>]+>", " ", html.unescape(t)))
+        if rating:
+            return rating, count
+    return None
+
+
+def save_from_shop(con, wine_id: int, shop: str, url: str, title: str, found: tuple, today: str):
+    """Keep a rating a shop quotes, unless a search found one with its number of ratings."""
+    ensure_tables(con)
+    rating, count = found
+    old = con.execute("SELECT rating, ratings_count, how FROM vivino_rating WHERE wine_id=?", (wine_id,)).fetchone()
+    if old and old["rating"] and old["ratings_count"] and not (old["how"] or "").startswith(("quoted", "on the page")):
+        return
+    con.execute("""INSERT OR REPLACE INTO vivino_rating (wine_id, wine, rating, ratings_count, vivino_title, vivino_url,
+                                                          match_score, how, checked_on)
+                   VALUES (?, ?, ?, ?, ?, ?, 100, ?, ?)""",
+                (wine_id, title, rating, count, title, url, f"on the page of {shop}", today))
+
+
 EURO = r"(\d{1,4}(?:[.,]\d{2})?)"
 SNIPPET_PRICE = [
     re.compile(r"(?:€|EUR)\s?" + EURO + r"(?![\d%])", re.I),

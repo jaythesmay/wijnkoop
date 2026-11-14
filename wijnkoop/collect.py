@@ -13,6 +13,7 @@ from .bottles import fix_volume
 from .deals import effective_per_75cl, parse_deal
 from .normalize import cuvee_key, norm, split_estate, wine_key
 from .images import image_of
+from .vivino import in_page as vivino_in_page, save_from_shop as save_vivino
 from .process import process_token
 from .reference import competition_id, parse_award_text
 from .shops import gall
@@ -127,6 +128,7 @@ def _upsert_wine(con, p: gall.GallProduct, cuvee_id: int, vintage: int | None) -
 def _save_awards(con, p: gall.GallProduct, wine_id: int, offer_id: int, shop_id: int, today: str):
     page_vintage = _int(p.specs.get("vintage"))
     cuvee_id = con.execute("SELECT cuvee_id FROM wine WHERE id=?", (wine_id,)).fetchone()["cuvee_id"]
+    kept = set()
     for award in p.expert_awards:
         source, result = award[0], award[1]
         rated_vintage = award[2] if len(award) > 2 else None
@@ -161,6 +163,17 @@ def _save_awards(con, p: gall.GallProduct, wine_id: int, offer_id: int, shop_id:
             "INSERT OR IGNORE INTO award_match (award_id, wine_id, match_score, confirmed) VALUES (?,?,1.0,1)",
             (award_id, target),
         )
+        kept.add(award_id)
+    if kept:
+        # What this page showed before and no longer shows (or WijnKoop read wrongly before, such as
+        # 100 points from "95 van de 100 punten") is gone. Only when the page showed awards at all:
+        # a page whose awards did not load this time keeps the ones it had.
+        gone = [r[0] for r in con.execute(
+            f"""SELECT id FROM award WHERE source='shop page' AND source_url=?
+                AND id NOT IN ({','.join('?' * len(kept))})""", (p.url, *kept))]
+        for award_id in gone:
+            con.execute("DELETE FROM award_match WHERE award_id=?", (award_id,))
+            con.execute("DELETE FROM award WHERE id=?", (award_id,))
 
 
 def _change_events(con, today, shop_id, offer_id, wine_id, current, p, stock):
@@ -264,6 +277,9 @@ def save_product(con, shop_id: int, p: gall.GallProduct, today: str, matcher=Non
 
     db.record_price(con, offer_id, today, p.price, p.promotion, p.was_price, effective, stock)
     _save_awards(con, p, wine_id, offer_id, shop_id, today)
+    if getattr(p, "vivino", None):
+        shop = con.execute("SELECT name FROM shop WHERE id=?", (shop_id,)).fetchone()
+        save_vivino(con, wine_id, shop[0] if shop else "the shop", p.url, p.title, p.vivino, today)
     _wine_name(con, wine_id, cuvee_id)
     return offer_id
 
@@ -434,6 +450,8 @@ def _read_pages(shop, con, shop_id, run_id, skip_since, ok, failed, limit, clien
             product = shop.parse_product(url, page)
             if not getattr(product, "image_url", None) and isinstance(page, str):
                 product.image_url = image_of(page, url)  # for comparing wines on the data quality page
+            if isinstance(page, str):
+                product.vivino = vivino_in_page(page)  # a Vivino rating the shop quotes itself
             read += 1
             if product.price is None:
                 no_price += 1
