@@ -43,22 +43,44 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 {% if vivino.running %}
 <tr><td>Vivino ratings <span class="pill v-top">looking up</span><div class="meta">{{ vivino.running.pages_ok or 0 }}{% if vivino.running.note and vivino.running.note.startswith('looking up ') %} of {{ vivino.running.note[11:].split(' ')[0] }}{% endif %} wines so far · <a href="#vivino">details</a></div></td><td></td></tr>
 {% endif %}
-{% for j in jobs %}
+{% for j in jobs %}{% set skipped = (j.skipped or '').split(',') %}
 <tr>
-  <td>{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% if s.state == 'running' %} <span class="pill v-top">reading</span>{% elif s.state == 'queued' %} <span class="pill v-fair">waiting</span>{% elif s.state == 'paused' %} <span class="pill v-fair">paused</span>{% elif s.state == 'resuming' %} <span class="pill v-fair">carries on soon</span>{% else %} <span class="pill v-good">done</span>{% endif %}{% endfor %}{% if not loop.last %} · {% endif %}{% endfor %}
-    <div class="meta">{% if j.source == 'weekly' %}Weekly run, started{% else %}Started{% endif %} {{ j.requested.replace('T', ' ')[:16] }}{% set w = shops|selectattr('state', 'equalto', 'queued')|selectattr('key', 'in', j.shops.split(','))|list %}{% if w %} · {{ w|length }} shop{{ 's' if w|length != 1 }} {{ w[0].advice }}{% endif %}</div></td>
+  <td><b>{% if j.source == 'weekly' %}Weekly run{% else %}Your run{% endif %}</b>, started {{ j.requested.replace('T', ' ')[:16] }}
+    <div class="meta">At most {{ limits.max_runs }} shop{{ 's' if limits.max_runs != 1 }} at the same time. Stop one shop with its own button; “Stop all” ends the whole run.</div></td>
   <td class="num">
     <form method="post" action="/update">
       <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
       <input type="hidden" name="stop" value="{{ j.id }}">
-      <button type="submit">Stop</button>
+      <button type="submit">Stop all</button>
     </form>
   </td>
 </tr>
+{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}
+<tr class="sub">
+  <td style="padding-left:18px">{{ s.name }}
+    {% if s.state == 'running' %}<span class="pill v-top">reading</span>{% elif key in skipped or (s.carry_on and s.state == 'useful') %}<span class="pill v-fair">stopped</span>{% elif s.state == 'queued' %}<span class="pill v-fair">waiting</span>{% elif s.state == 'paused' %}<span class="pill v-fair">paused</span>{% elif s.state == 'resuming' %}<span class="pill v-fair">carries on soon</span>{% else %}<span class="pill v-good">done</span>{% endif %}
+    {% if s.state in ('running', 'queued', 'paused') and key not in skipped and s.advice != 'reading' %}<div class="meta">{{ s.advice }}</div>{% endif %}</td>
+  <td class="num">
+    {% if key not in skipped and s.state in ('running', 'queued') %}
+    <form method="post" action="/update">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="stop_shop" value="{{ key }}">
+      <button type="submit" class="small">Stop</button>
+    </form>
+    {% elif s.state == 'useful' or (key in skipped and s.state not in ('running', 'queued', 'paused')) %}
+    <form method="post" action="/update">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+      <input type="hidden" name="shop" value="{{ key }}">{% if s.state != 'useful' %}<input type="hidden" name="force" value="1">{% endif %}
+      <button type="submit" class="small">{{ 'Carry on' if s.carry_on else 'Read now' }}</button>
+    </form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}{% endfor %}
 {% endfor %}
 </table></div>
 <p class="small muted">This page refreshes itself every 30 seconds. If WijnKoop is restarted or updated during a run, the run carries on
-by itself within 10 minutes, from where it stopped. A run you stop yourself waits until you press “Carry on”, or until the weekly run.
+by itself within 10 minutes, from where it stopped. A shop you stop yourself waits until you press its “Carry on”, or until the next weekly run; the other shops are not affected.
 A shop that answers “too many requests” (HTTP 429) is paused for a few hours and then read on, more slowly.</p>
 {% endif %}
 

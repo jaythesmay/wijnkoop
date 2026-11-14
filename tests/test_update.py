@@ -348,3 +348,48 @@ def test_one_shop_of_a_job_runs_in_its_own_process(monkeypatch):
     jobs.launch_shop("gall")
     args, kw = calls[0]
     assert args[-3:] == ["collect", "--one", "gall"] and "start_new_session" not in kw  # Stop ends it too
+
+
+def test_stop_one_shop_leaves_the_others(con, monkeypatch):
+    monkeypatch.setattr("wijnkoop.awards.importer.match_awards", lambda con: None)
+    monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
+    jobs.set_limits(con, "1", "1")
+    reading = subprocess.Popen(["sleep", "30"])
+    try:
+        job_id = jobs.request_run(con, ["gall", "vindict", "vinio"], force=True)["job_id"]
+        con.execute("UPDATE app_job SET process=? WHERE id=?", (process_token(), job_id))
+        _run(con, "gall", hours_ago=0, finished=False, process=process_token(reading.pid), now=dt.datetime.now())
+        # Stop the shop being read: only its own process ends
+        assert jobs.stop_shop(con, "gall") == "stopped"
+        reading.wait(timeout=5)
+        assert con.execute("SELECT note, process FROM run_log WHERE job='gall'").fetchone()[:] == ("stopped by you", None)
+        # Stop a shop that is still waiting: the run leaves it out
+        assert jobs.stop_shop(con, "vindict") == "left out"
+        status = {s["key"]: s for s in jobs.shop_status(con)["shops"]}
+        assert status["vinio"]["state"] == "queued" and status["vindict"]["state"] != "queued"
+        assert status["gall"]["carry_on"]  # "Carry on" for this one shop
+        read = []
+        assert jobs.run_job(con, job_id, lambda shop, con: read.append(shop.KEY)) == ["vinio"]
+        note = con.execute("SELECT note FROM app_job WHERE id=?", (job_id,)).fetchone()[0]
+        assert "vindict stopped by you" in note and "failed" not in note
+        # The weekly run does not start a stopped shop again by itself, until the next weekly moment
+        now = dt.datetime.now()
+        assert not cli.run_is_due(con, now, "gall")
+        assert cli.run_is_due(con, now + dt.timedelta(days=8), "gall")
+    finally:
+        reading.kill()
+
+
+def test_update_page_has_a_stop_per_shop(con, tmp_path):
+    from datasette.app import Datasette
+
+    job_id = jobs.request_run(con, ["gall", "vindict"], force=True)["job_id"]
+    con.execute("UPDATE app_job SET process=?, source='weekly', skipped='vindict' WHERE id=?", (process_token(), job_id))
+    _run(con, "gall", hours_ago=0, finished=False, process=process_token(), now=dt.datetime.now())
+    con.close()
+    ds = Datasette([str(tmp_path / "wijnkoop.db")], plugins_dir=str(ROOT / "datasette" / "plugins"),
+                   template_dir=str(ROOT / "datasette" / "templates"))
+    page = asyncio.run(ds.client.get("/update")).text
+    assert "Weekly run</b>" in page and "Stop all</button>" in page
+    assert 'name="stop_shop" value="gall"' in page and 'name="stop_shop" value="vindict"' not in page
+    assert re.search(r'name="shop" value="vindict">.*?Read now</button>', page, re.S)

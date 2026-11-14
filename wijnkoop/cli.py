@@ -119,6 +119,8 @@ def run_is_due(con, now: dt.datetime, job: str = "gall") -> bool:
     """
     if jobs.paused_run(con, job, now):
         return False  # the shop asked us to wait; it carries on after the pause
+    if jobs.stopped_since(con, job, _slot(now)):
+        return False  # you stopped it: it waits for "Carry on", or the next weekly moment
     if jobs.resumable_run(con, job, now):
         return True
     row = con.execute(
