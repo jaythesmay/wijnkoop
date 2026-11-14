@@ -347,3 +347,32 @@ def test_reparse_fixes_the_competition(tmp_path):
     assert scores.reparse_shop_awards(con) == 1
     assert con.execute("SELECT c.short FROM award a JOIN competition c ON c.id = a.competition_id").fetchone()[0] == \
         "Gilbert & Gaillard"
+
+
+def test_same_award_on_two_shop_pages_counts_once(tmp_path):
+    """Two shops print "Luca Maroni 99" for the same wine: one opinion, not two (it gave 91.1)."""
+    from wijnkoop.collect import save_product
+    from wijnkoop.shops.gall import GallProduct
+
+    con = db.connect(tmp_path / "wijnkoop.db")
+    for name in ("Wijnvoordeel", "Wijnbeurs"):
+        con.execute("INSERT OR IGNORE INTO shop (name, website) VALUES (?, 'https://x')", (name,))
+
+    def sell(shop, awards):
+        sid = con.execute("SELECT id FROM shop WHERE name=?", (shop,)).fetchone()[0]
+        save_product(con, sid, GallProduct(
+            url=f"https://{shop}/lupo", product_id="1", title="Lupo Meraviglia Osso Tre di Tre 2024", colour="red",
+            volume_cl=75.0, price=7.99, in_stock_online=True, specs={"vintage": "2024"}, expert_awards=awards),
+            "2026-11-14")
+        con.commit()
+
+    sell("Wijnvoordeel", [("Luca Maroni", "99 punten")])
+    sell("Wijnbeurs", [("Luca Maroni", "99 punten")])
+    scores.recompute(con)
+    row = con.execute("SELECT n_awards, overall FROM wine_score").fetchone()
+    assert tuple(row) == (1, scores.overall([(93, 0.4)]))
+    # Two different scores of one critic: their average, still once
+    sell("Wijnbeurs", [("Luca Maroni", "97 punten")])
+    scores.recompute(con)
+    row = con.execute("SELECT n_awards, overall, best_award FROM wine_score").fetchone()
+    assert row[0] == 1 and row[1] == scores.overall([(92, 0.4)]) and "average of 2" in row[2]
