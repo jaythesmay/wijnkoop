@@ -18,6 +18,8 @@ from .gall import GallProduct as Product
 KEY = "wijnvoordeel"
 SHOP_NAME = "Wijnvoordeel"
 BASE = "https://www.wijnvoordeel.nl"
+PACE = 20  # crawl-delay in its robots.txt (November 2026); a longer one read at the start of a run wins
+PACE_WHY = "the shop's robots.txt asks for this"
 SITEMAP = BASE + "/products.xml"
 NEEDS_BROWSER = True
 

@@ -79,5 +79,5 @@ def test_make_client_picks_the_browser(monkeypatch):
     import wijnkoop.browser as browser
 
     made = []
-    monkeypatch.setattr(browser, "BrowserClient", lambda base: made.append(base) or "browser")
+    monkeypatch.setattr(browser, "BrowserClient", lambda base, **kw: made.append(base) or "browser")
     assert collect.make_client(wijnbeurs) == "browser" and made == ["https://www.wijnbeurs.nl"]

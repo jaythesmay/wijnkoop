@@ -464,7 +464,7 @@ def _backup(con, path, version):
 
 # Columns added after phase 2 went live; added on start-up when missing.
 LATER_COLUMNS = {
-    "run_log": [("process", "TEXT")],
+    "run_log": [("process", "TEXT"), ("wait_until", "TEXT")],
     "award_upload": [("log", "TEXT")],
     "wine_score": [("gold", "INTEGER DEFAULT 0"), ("wine", "TEXT")],
     "offer_score": [("fair_price", "REAL"), ("price_quality", "REAL"), ("verdict", "TEXT"), ("wine", "TEXT"),
@@ -511,6 +511,9 @@ def connect(path=None):
     from .vivino import ensure_tables
 
     ensure_tables(con)
+    from .pace import ensure_table as ensure_pace
+
+    ensure_pace(con)
     _add_later_columns(con)
     con.executescript(VIEWS)
     con.execute("PRAGMA foreign_keys = ON")

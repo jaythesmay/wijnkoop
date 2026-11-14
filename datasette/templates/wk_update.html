@@ -1,7 +1,12 @@
 {% extends "wk_base.html" %}
 {% block content %}
-{% set anything = jobs or scheduler_runs or resuming or dead_jobs %}
-{% if anything %}<meta http-equiv="refresh" content="30">{% endif %}
+{% set anything = jobs or scheduler_runs or resuming or dead_jobs or paused %}
+{% if anything %}<script>
+// Refresh every 30 seconds while something goes on, but not while you are changing a number below.
+var wkTouched = false;
+document.addEventListener("input", () => { wkTouched = true; });
+setInterval(() => { if (!wkTouched && !document.querySelector("input:focus")) location.reload(); }, 30000);
+</script>{% endif %}
 <h1>Read shops now</h1>
 <p class="lead">Every shop is read automatically each week ({{ next_weekly.strftime('%A %d %B %H:%M') }} is next).
 Start a shop here to have new prices sooner. A run goes on in the background when you close this page;
@@ -27,6 +32,9 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 {% for s in resuming %}
 <tr><td>{{ s.name }} <span class="pill v-fair">carries on soon</span><div class="meta">{{ s.advice }}</div></td><td></td></tr>
 {% endfor %}
+{% for s in paused %}
+<tr><td>{{ s.name }} <span class="pill v-fair">paused</span><div class="meta">{{ s.advice }}</div></td><td></td></tr>
+{% endfor %}
 {% for j in dead_jobs %}
 <tr><td>Your run of {% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% endfor %}{% if not loop.last %}, {% endif %}{% endfor %}
   <span class="pill v-fair">starts again soon</span>
@@ -47,7 +55,8 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 {% endfor %}
 </table></div>
 <p class="small muted">This page refreshes itself every 30 seconds. If WijnKoop is restarted or updated during a run, the run carries on
-by itself within 10 minutes, from where it stopped. A run you stop yourself waits until you press “Carry on”, or until the weekly run.</p>
+by itself within 10 minutes, from where it stopped. A run you stop yourself waits until you press “Carry on”, or until the weekly run.
+A shop that answers “too many requests” (HTTP 429) is paused for a few hours and then read on, more slowly.</p>
 {% endif %}
 
 <h2>Shops</h2>
@@ -58,7 +67,8 @@ by itself within 10 minutes, from where it stopped. A run you stop yourself wait
   <td><b>{{ s.name }}</b><div class="meta">{{ s.wines }} wine{{ 's' if s.wines != 1 }}{% if s.browser %} · headless browser{% endif %}</div></td>
   <td>{{ s.last_text }}{% if s.last %}<div class="meta">{{ s.last.pages_ok }} pages{% if s.last.pages_failed %}, {{ s.last.pages_failed }} failed{% endif %}</div>{% endif %}
     {% for f in s.failures %}<div class="meta">{{ f.n }} failed: {{ f.reason }} (e.g. <a href="{{ f.example }}" target="_blank" rel="noopener">this page</a>)</div>{% endfor %}
-    <div class="meta">{% if s.state == 'running' %}<span class="pill v-top">reading</span> {% elif s.state == 'queued' %}<span class="pill v-fair">waiting</span> {% elif s.state == 'resuming' %}<span class="pill v-fair">carries on soon</span> {% endif %}{{ s.advice }}</div></td>
+    <div class="meta">{% if s.state == 'running' %}<span class="pill v-top">reading</span> {% elif s.state == 'queued' %}<span class="pill v-fair">waiting</span> {% elif s.state == 'resuming' %}<span class="pill v-fair">carries on soon</span> {% elif s.state == 'paused' %}<span class="pill v-fair">paused</span> {% endif %}{{ s.advice }}</div>
+    <div class="meta">One page every {{ '%.0f'|format(s.pace.now) }} s{% if s.pace.learned %}, normally {{ '%.0f'|format(s.pace.normal) }} s: {{ s.pace.learned }}{% else %}: {{ s.pace.why }}{% endif %}</div></td>
   <td class="num">
     {% if s.state in ('useful', 'fresh', 'soon') %}
     <form method="post" action="/update">
@@ -73,17 +83,38 @@ by itself within 10 minutes, from where it stopped. A run you stop yourself wait
 {% endfor %}
 </table></div>
 <h2 id="limits">At the same time</h2>
-<form method="post" action="/update" class="panel" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
+<form method="post" action="/update" id="limits-form" class="panel" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
   <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
   <input type="hidden" name="limits" value="1">
   <div><label for="max_runs">Shops read at once</label>
     <input type="number" id="max_runs" name="max_runs" min="1" max="10" value="{{ limits.max_runs }}" style="width:80px"></div>
   <div><label for="max_browser_runs">Of which with the browser</label>
     <input type="number" id="max_browser_runs" name="max_browser_runs" min="1" max="10" value="{{ limits.max_browser_runs }}" style="width:80px"></div>
-  <button type="submit">Save</button>
+  <button type="submit" id="limits-save">Save</button>
+  <span id="limits-said" class="small" role="status">{% if saved == 'limits' %}Saved. Shops that are waiting look again within 30 seconds.{% endif %}</span>
   <p class="small muted" style="margin:0;flex-basis:100%">Other shops wait their turn. Wijnvoordeel and Wijnbeurs need a headless browser, which takes the most from the NAS.
-  Runs have a lower priority than these pages, so the app stays quick while they work.</p>
+  Runs have a lower priority than these pages, so the app stays quick while they work. A run that is already going on is not stopped when you lower the number.</p>
 </form>
+<script>
+document.getElementById("limits-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target, said = document.getElementById("limits-said"), save = document.getElementById("limits-save");
+  save.disabled = true;
+  said.textContent = "Saving…";
+  try {
+    const r = await fetch("/update", {method: "POST", body: new URLSearchParams(new FormData(form)),
+                                      credentials: "same-origin", headers: {"x-wk-quick": "1"}});
+    if (r.status === 403) { said.textContent = "This page is out of date (WijnKoop was restarted or updated). Reload the page (F5) and save again."; return; }
+    const d = await r.json();
+    form.max_runs.value = d.max_runs; form.max_browser_runs.value = d.max_browser_runs;
+    window.wkTouched = false;
+    said.textContent = "Saved: at most " + d.max_runs + " shop" + (d.max_runs > 1 ? "s" : "") + " at once, "
+                     + d.max_browser_runs + " with the browser. Shops that are waiting look again within 30 seconds.";
+  } catch (e) {
+    said.textContent = "Not saved: " + e.message;
+  } finally { save.disabled = false; }
+});
+</script>
 
 <p class="small muted" style="margin-top:12px">Every run is in the <a href="/wijnkoop/run_log?_sort_desc=id">update log</a>.
 Messages while it runs are in the container's log in Container Station.</p>

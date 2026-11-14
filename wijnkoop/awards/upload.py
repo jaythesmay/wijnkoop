@@ -673,6 +673,7 @@ def relink_uploads(con) -> int:
             if _link(con, a["id"], rec, matcher, keys, new_only=since):
                 found += 1
                 touched.add(a["source_url"].split(":")[1])
+                con.commit()  # not holding the database during the matching of the next ones
         for upload_id in touched:
             _count_links(con, int(upload_id))
     con.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (RELINK_SETTING, str(top)))

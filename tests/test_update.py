@@ -189,11 +189,11 @@ def test_update_page(con, tmp_path, monkeypatch):
     page, r, after = asyncio.run(run())
     assert page.status_code == 200 and "Read now" in page.text and "Gall &amp; Gall" in page.text
     assert "Going on now" in page.text and "carries on soon" in page.text and "carries on by itself" in page.text
-    assert "Carry on</button>" in page.text and 'http-equiv="refresh"' in page.text
+    assert "Carry on</button>" in page.text and "location.reload()" in page.text
     assert r.status_code == 302 and "started=gall" in r.headers["location"]
     assert len(launched) == 1
     assert "Going on now" in after.text and "Started: Gall &amp; Gall" in after.text
-    assert 'http-equiv="refresh"' in after.text
+    assert "location.reload()" in after.text
 
 
 class Refusing(FakeClient):

@@ -9,6 +9,10 @@ from . import shopify
 KEY = "vanoudsdezwaan"
 SHOP_NAME = "Vanouds de Zwaan"
 BASE = "https://vanoudsdezwaan.nl"
+# robots.txt sets no crawl-delay, but at one page every 5 s the shop (Shopify) answered
+# "429 Too Many Requests" for long stretches. WijnKoop also learns a slower pace by itself.
+PACE = 10
+PACE_WHY = "set for this shop: at 5 s it answered “too many requests”"
 
 
 def list_products(client):
