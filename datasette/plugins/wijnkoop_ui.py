@@ -311,9 +311,26 @@ async def upload_check(datasette, request):
         if _wants_json(request):
             return Response.json({"saved": hit, "verdict": post.get("verdict"),
                                   "left": (await _read(datasette, ui.nav))["to_check"]})
-        return Response.redirect(f"/upload/check#a{post.get('award', '')}")
+        back = post.get("back") or ""
+        back = back if re.fullmatch(r"[\w=&.,%+-]*", back) else ""
+        return Response.redirect(f"/upload/check{'?' + back if back else ''}#a{post.get('award', '')}")
+    a = request.args
+
+    def number(key):
+        try:
+            return float((a.get(key) or "").replace(",", "."))
+        except ValueError:
+            return None
+    chosen = {k: number(k) for k in ("pts_from", "pts_to", "eur_from", "eur_to", "alike_from", "alike_to")}
+    sort = a.get("sort") if a.get("sort") in award_upload.CHECK_SORTS else "alike"
     rows = await _read(datasette, award_upload.to_check)
-    return await _page(datasette, request, "wk_upload_check.html", "Award links to check", links=rows)
+    shown = award_upload.pick_to_check(rows, (chosen["pts_from"], chosen["pts_to"]),
+                                       (chosen["eur_from"], chosen["eur_to"]),
+                                       (chosen["alike_from"], chosen["alike_to"]), sort)
+    filters = "&".join(f"{k}={'%g' % v}" for k, v in chosen.items() if v is not None)
+    back = "&".join(x for x in (filters, f"sort={sort}" if sort != "alike" else "") if x)
+    return await _page(datasette, request, "wk_upload_check.html", "Award links to check", links=shown,
+                       total=len(rows), chosen=chosen, sort=sort, sorts=award_upload.CHECK_SORTS, back=back, filters=filters)
 
 
 async def upload_csv(datasette, request):

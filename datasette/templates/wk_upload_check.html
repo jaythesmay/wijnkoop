@@ -5,11 +5,31 @@
 <p class="lead">An official award was linked to a wine in your shops with a name that is alike but not the same.
 It counts until you say otherwise, and it stays on this list until you answer. Your answer also holds for the same
 award in other files, and for files you load later.</p>
+{% if total %}
+{% set q = back %}
+{% macro val(k) %}{% if chosen[k] is not none %}{{ '%g'|format(chosen[k]) }}{% endif %}{% endmacro %}
+{% macro sortlink(key, label, other=None) -%}
+{%- set to = other if (sort == key and other) else key -%}
+<a href="/upload/check?{{ filters }}{{ '&' if filters }}sort={{ to }}" title="Sort">{{ label }}{% if sort == key %} ▼{% elif other and sort == other %} ▲{% endif %}</a>
+{%- endmacro %}
+<form method="get" action="/upload/check" class="panel filters" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-bottom:14px">
+  <div><label for="pts_from">Points from</label><input type="number" step="0.5" min="0" max="100" id="pts_from" name="pts_from" value="{{ val('pts_from') }}"></div>
+  <div><label for="pts_to">Points to</label><input type="number" step="0.5" min="0" max="100" id="pts_to" name="pts_to" value="{{ val('pts_to') }}"></div>
+  <div><label for="eur_from">Price from €</label><input type="number" step="0.5" min="0" id="eur_from" name="eur_from" value="{{ val('eur_from') }}"></div>
+  <div><label for="eur_to">Price to €</label><input type="number" step="0.5" min="0" id="eur_to" name="eur_to" value="{{ val('eur_to') }}"></div>
+  <div><label for="alike_from">Alike from %</label><input type="number" step="1" min="0" max="100" id="alike_from" name="alike_from" value="{{ val('alike_from') }}"></div>
+  <div><label for="alike_to">Alike to %</label><input type="number" step="1" min="0" max="100" id="alike_to" name="alike_to" value="{{ val('alike_to') }}"></div>
+  <div><label for="sort">Order</label><select id="sort" name="sort">{% for k, label in sorts.items() %}<option value="{{ k }}"{% if k == sort %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <div style="align-self:end"><button class="primary" type="submit">Show</button>{% if q %} <a class="small" href="/upload/check">all</a>{% endif %}</div>
+</form>
+<p class="small muted">Points: the award on the 100-point scale, as it counts in the scores (a medal is turned into points). A limit on points or price leaves out the links without points or not on sale.</p>
+<p class="small muted" id="left">{% if links|length != total %}{{ links|length }} of {{ total }} to check shown.{% else %}{{ total }} to check.{% endif %}</p>
 {% if links %}
-<p class="small muted" id="left">{{ links|length }} to check.</p>
 <style>
 #links{table-layout:fixed;width:100%}
 #links td,#links th{overflow-wrap:anywhere;vertical-align:top}
+#links th a{color:inherit;text-decoration:none}
+#links th a:hover{text-decoration:underline}
 #links dl.ew{display:grid;grid-template-columns:auto 1fr;gap:1px 8px;margin:0}
 #links dl.ew dt{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding-top:3px}
 #links dl.ew dd{margin:0}
@@ -24,8 +44,8 @@ award in other files, and for files you load later.</p>
 }
 </style>
 <div class="panel"><table class="list" id="links">
-<colgroup><col style="width:34%"><col style="width:30%"><col style="width:14%"><col style="width:22%"></colgroup>
-<tr class="head"><th>In the results file</th><th>In your shops</th><th class="num">Price</th><th>Same wine?</th></tr>
+<colgroup><col style="width:30%"><col style="width:28%"><col style="width:9%"><col style="width:13%"><col style="width:20%"></colgroup>
+<tr class="head"><th>In the results file</th><th>In your shops · {{ sortlink('alike', '% alike', 'unlike') }}</th><th class="num">{{ sortlink('points', 'Points') }}</th><th class="num">{{ sortlink('cheap', 'Price', 'dear') }}</th><th>Same wine?</th></tr>
 {% for m in links %}
 <tr id="a{{ m.award_id }}">
   <td data-label="In the results file"><dl class="ew">
@@ -36,9 +56,10 @@ award in other files, and for files you load later.</p>
       <dt>Estate</dt><dd>{{ m.shop_estate or '–' }}</dd>
       <dt>Wine</dt><dd><a href="/wine/{{ m.wine_id }}">{{ m.shop_wine }}</a>{% if m.wine_vintage %} {{ m.wine_vintage }}{% endif %}</dd></dl>
     <div class="meta">{{ (m.match_score * 100)|round|int }}% alike</div></td>
+  <td data-label="Points" class="num">{% if m.score is not none %}{{ '%g'|format(m.score) }}{% else %}<span class="muted">–</span>{% endif %}</td>
   <td data-label="Price" class="num">{% if m.price %}{{ m.price|money }}<div class="meta">{{ m.price_shop }}{% if m.shops > 1 %} +{{ m.shops - 1 }}{% endif %}</div>{% else %}<span class="muted">not on sale</span>{% endif %}</td>
   <td data-label="Same wine?"><form method="post" action="/upload/check" class="verdict">
-    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}"><input type="hidden" name="award" value="{{ m.award_id }}"><input type="hidden" name="wine" value="{{ m.wine_id }}">
+    <input type="hidden" name="csrftoken" value="{{ csrftoken() }}"><input type="hidden" name="award" value="{{ m.award_id }}"><input type="hidden" name="wine" value="{{ m.wine_id }}"><input type="hidden" name="back" value="{{ q }}">
     <div class="said small">not checked yet</div>
     <button type="submit" name="verdict" value="same" title="Yes, this award is for this wine: count it">✓ Yes</button>
     <button type="submit" name="verdict" value="other" title="No, another wine: don't count it">✗ No</button>
@@ -68,6 +89,9 @@ document.querySelectorAll("form.verdict").forEach(f => f.addEventListener("submi
   } catch (e) { said.textContent = "Not saved: " + e.message; }
 }));
 </script>
+{% else %}
+<div class="empty">No links to check within these limits. <a href="/upload/check">Show all {{ total }}</a></div>
+{% endif %}
 {% else %}
 <div class="empty">Nothing to check: every award link has your answer, or was certain enough.</div>
 {% endif %}

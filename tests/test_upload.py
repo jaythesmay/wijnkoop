@@ -423,6 +423,7 @@ def test_a_match_to_check_stays_until_answered_and_is_not_asked_twice(con):
     assert first["upload"]["log"]["review"] == 1
     todo = upload.to_check(con)
     assert len(todo) == 1 and todo[0]["files"] == 1 and todo[0]["price"] == 12.0
+    assert todo[0]["score"] is not None  # IWSC silver, on the 100-point scale
     assert (todo[0]["file_estate"], todo[0]["file_wine"]) == ("Bodegas Olarra", "Cerro Anon Crianza")
     assert (todo[0]["shop_estate"], todo[0]["shop_wine"]) == ("Bodegas Olarra", "Crianza")
     upload.relink_uploads(con)
@@ -461,18 +462,43 @@ def test_check_page(con, tmp_path, monkeypatch):
     async def run():
         home = await ds.client.get("/")
         page = await ds.client.get("/upload/check")
+        filtered = await ds.client.get("/upload/check?eur_from=15&sort=points")
         token = re.search(r'name="csrftoken" value="([^"]+)"', page.text).group(1)
         post = await ds.client.post("/upload/check", data={"csrftoken": token, "award": m["award_id"],
                                                            "wine": m["wine_id"], "verdict": "same"},
                                     cookies={"ds_csrftoken": page.cookies.get("ds_csrftoken")},
                                     headers={"x-wk-quick": "1"})
-        return home, page, post, await ds.client.get("/upload/check")
+        return home, page, post, await ds.client.get("/upload/check"), filtered
 
-    home, page, post, after = asyncio.run(run())
+    home, page, post, after, filtered = asyncio.run(run())
+    assert "No links to check within these limits" in filtered.text and 'value="15"' in filtered.text
+    assert '<option value="points" selected>' in filtered.text
     assert "/upload/check" in home.text
     links = page.text[page.text.index('id="links"'):]
-    assert "<th>In the results file</th><th>In your shops</th>" in links
+    assert "<th>In the results file</th><th>In your shops · <a href=\"/upload/check?sort=unlike\"" in links
     assert "<dt>Estate</dt><dd>Bodegas Olarra</dd>" in links and "<dt>Wine</dt><dd><b>Cerro Anon Crianza</b> 2021" in links
     assert ">Crianza</a> 2021" in links and "€12.00" in links
     assert post.json() == {"saved": True, "verdict": "same", "left": 0}
     assert "Nothing to check" in after.text
+    assert 'name="pts_from"' in page.text and 'name="eur_to"' in page.text and 'name="alike_from"' in page.text
+    assert 'data-label="Points" class="num">' in links
+
+
+def test_check_list_filters_and_sorts():
+    rows = [
+        {"award_id": 1, "match_score": 0.95, "score": 93.0, "price": 22.0, "shop_wine": "Barolo"},
+        {"award_id": 2, "match_score": 0.80, "score": 88.0, "price": 9.5, "shop_wine": "Albariño"},
+        {"award_id": 3, "match_score": 0.70, "score": None, "price": 12.0, "shop_wine": "Chianti"},
+        {"award_id": 4, "match_score": 0.88, "score": 90.0, "price": None, "shop_wine": "Douro"},
+    ]
+    ids = lambda out: [r["award_id"] for r in out]
+    assert ids(upload.pick_to_check(rows)) == [1, 2, 3, 4]  # as to_check gave them
+    assert ids(upload.pick_to_check(rows, price=(9, 15))) == [2, 3]
+    assert ids(upload.pick_to_check(rows, points=(89, None))) == [1, 4]  # no points: left out
+    assert ids(upload.pick_to_check(rows, alike=(80, 90))) == [2, 4]
+    assert ids(upload.pick_to_check(rows, price=(9, 15), points=(85, 95))) == [2]
+    assert ids(upload.pick_to_check(rows, sort="points")) == [1, 4, 2, 3]
+    assert ids(upload.pick_to_check(rows, sort="cheap")) == [2, 3, 1, 4]
+    assert ids(upload.pick_to_check(rows, sort="dear")) == [1, 3, 2, 4]
+    assert ids(upload.pick_to_check(rows, sort="unlike")) == [3, 2, 4, 1]
+    assert ids(upload.pick_to_check(rows, sort="name")) == [2, 1, 3, 4]
