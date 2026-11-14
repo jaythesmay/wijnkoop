@@ -26,8 +26,8 @@ class FakeHttp:
     def __init__(self, payload):
         self.payload, self.calls = payload, []
 
-    def get(self, url, params=None, headers=None):
-        self.calls.append((url, params, headers))
+    def post(self, url, json=None, headers=None):
+        self.calls.append((url, json, headers))
         payload = self.payload
 
         class R:
@@ -60,9 +60,11 @@ def test_look_up_stores_rating_and_counts_searches(tmp_path, monkeypatch):
     http = FakeHttp(CATENA)
     row = vivino.look_up(con, "secret", wine_id, client=http, today=TODAY)
     assert row["rating"] == 4.3 and row["vivino_title"] == "Catena Zapata Malbec Argentino"
-    url, params, headers = http.calls[0]
-    assert url == vivino.ENDPOINT and params["q"] == "site:vivino.com Catena Zapata Malbec Argentino"
-    assert headers["X-Subscription-Token"] == "secret"
+    url, body, headers = http.calls[0]
+    assert url == vivino.ENDPOINT == "https://api.tavily.com/search"
+    assert body["query"] == "Catena Zapata Malbec Argentino vivino" and body["include_domains"] == ["vivino.com"]
+    assert body["search_depth"] == "basic" and not body["include_raw_content"]  # 1 credit, never the page itself
+    assert headers["Authorization"] == "Bearer secret"
     assert vivino.searches_this_month(con, TODAY) == 1
     # the wine page shows it, apart from the award score
     data = ui.wine(con, wine_id)
@@ -77,8 +79,29 @@ def test_look_up_stores_rating_and_counts_searches(tmp_path, monkeypatch):
         vivino.look_up(con, "secret", wine_id, client=http, today=TODAY)
 
 
+def tavily(results):
+    return {"query": "x", "results": results, "images": [], "response_time": 0.5}
+
+
+def test_tavily_results():
+    result = tavily([
+        {"title": "Guidalberto 2021 | Vivino", "url": "https://www.vivino.com/NL/nl/tenuta-san-guido-guidalberto/w/1158063?year=2021",
+         "content": "Tenuta San Guido Guidalberto 2021. Rood van Toscane, Italië. 4,2 (3.456 beoordelingen). Prijs € 42,95",
+         "score": 0.9},
+        {"title": "Tenuta San Guido Guidalberto - Vivino", "url": "https://www.vivino.com/US/en/tenuta-san-guido-guidalberto/w/1158063",
+         "content": "Guidalberto · Toscana · 4.1 · 21,034 ratings", "score": 0.8},
+        {"title": "Guidalberto | Vivino", "url": "https://www.vivino.com/explore?q=guidalberto", "content": "4.5 stars"},
+    ])
+    c = vivino.candidates(result)
+    assert len(c) == 2  # only wine pages
+    assert (c[0]["rating"], c[0]["ratings_count"], c[0]["price"], c[0]["vintage"]) == (4.2, 3456, 42.95, 2021)
+    assert (c[1]["rating"], c[1]["ratings_count"], c[1]["vintage"]) == (4.1, 21034, None)
+    assert vivino._rating_from_text("Average rating 4.3 based on 2,150 ratings.") == (4.3, 2150)
+    assert vivino._rating_from_text("2019 · 1,234 ratings")[0] is None  # a year is not a rating
+
+
 def test_key_file(tmp_path):
-    path = tmp_path / "brave.ini"
+    path = tmp_path / "tavily.ini"
     assert vivino.load_key(path) is None
     vivino.save_key(" abc123 ", path)
     assert vivino.load_key(path) == "abc123"
@@ -130,7 +153,7 @@ def test_searches_leave_out_vintage_and_bottle_size():
     assert search_name("Bollinger Special Cuvée Magnum 1,5 L") == "Bollinger Special Cuvée"
     assert search_name("Chablis Premier Cru halve fles") == "Chablis Premier Cru"
     assert search_link("Muga Reserva 2019", 2019) == "https://www.vivino.com/search/wines?q=Muga+Reserva"
-    assert query_for("Muga Reserva", 2019) == "site:vivino.com Muga Reserva"
+    assert query_for("Muga Reserva", 2019) == "Muga Reserva vivino"
 
 
 def _shop(con, i, title, price=12.0):
@@ -207,7 +230,7 @@ def test_a_refused_key_stops_the_week(tmp_path):
     class Refused:
         calls = 0
 
-        def get(self, url, params=None, headers=None):
+        def post(self, url, json=None, headers=None):
             Refused.calls += 1
             req = httpx.Request("GET", url)
             raise httpx.HTTPStatusError("429", request=req, response=httpx.Response(429, request=req))

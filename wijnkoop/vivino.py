@@ -1,12 +1,13 @@
-"""Vivino ratings via the Brave Search API, as a test.
+"""Vivino ratings via the Tavily search API.
 
 Vivino's terms forbid reading vivino.com with automated means, so WijnKoop never opens a
-Vivino page. Instead it asks a search engine (Brave Search API, with Loes's own key) for the
-wine on vivino.com and reads the rating and price from the search result: Brave's structured
-data when it has it, otherwise the snippet text. Only prices in euros are kept.
+Vivino page. Instead it asks a search engine (Tavily, with Loes's own free key: 1,000 searches a
+month, no credit card) for the wine on vivino.com and reads the rating and price from the text of
+the search result. Only prices in euros are kept. (Until Nov 2026 this used the Brave Search API,
+which dropped its free plan; results in Brave's shape are still understood.)
 
-- The key lives in /data/brave.ini (written by "python -m wijnkoop vivino-setup"), never in code.
-- At most MONTHLY_LIMIT searches a month, so the free monthly credit is never exceeded.
+- The key lives in /data/tavily.ini (written by "python -m wijnkoop vivino-setup"), never in code.
+- At most MONTHLY_LIMIT searches a month, so the free 1,000 a month are never exceeded.
 - Every week the scheduler looks up at most WEEKLY wines (within the monthly limit): wines on the
   watchlist or in the order first, then wines on sale without any award, then the best scored.
   A rating is looked up again after RECHECK_DAYS.
@@ -16,8 +17,7 @@ data when it has it, otherwise the snippet text. Only prices in euros are kept.
   for the wine's other vintages or for the wine as a whole: a bit less (LESS); few everywhere:
   very lightly (LIGHT); under MIN_RATINGS: not at all. Never as "gold or better".
 - The price is shown as a reference, not as an offer: it cannot be ordered through WijnKoop.
-- Brave's terms say search results may not be kept after the API agreement ends: delete the
-  vivino_rating table (or run "vivino-setup --forget") when the key is cancelled.
+- "vivino-setup --forget" deletes the key and every stored Vivino rating.
 """
 import configparser
 import datetime as dt
@@ -30,8 +30,8 @@ from rapidfuzz import fuzz
 from . import config
 from .normalize import norm
 
-SETTINGS = config.DATA_DIR / "brave.ini"
-ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+SETTINGS = config.DATA_DIR / "tavily.ini"
+ENDPOINT = "https://api.tavily.com/search"
 MONTHLY_LIMIT = int(os.environ.get("WIJNKOOP_VIVINO_MONTHLY_LIMIT", "900"))
 MIN_MATCH = 80
 WEEKLY = int(os.environ.get("WIJNKOOP_VIVINO_WEEKLY", "200"))
@@ -71,7 +71,7 @@ def ensure_tables(con):
 def save_key(key: str, path=None):
     path = path or SETTINGS
     cp = configparser.ConfigParser()
-    cp["brave"] = {"api_key": key.strip()}
+    cp["tavily"] = {"api_key": key.strip()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         cp.write(f)
@@ -84,7 +84,7 @@ def load_key(path=None) -> str | None:
         return None
     cp = configparser.ConfigParser()
     cp.read(path)
-    return cp.get("brave", "api_key", fallback=None) or None
+    return cp.get("tavily", "api_key", fallback=None) or None
 
 
 def searches_this_month(con, today: dt.date | None = None) -> int:
@@ -100,10 +100,13 @@ def _count_search(con, today: dt.date | None = None):
 
 
 def search(key: str, query: str, client=None) -> dict:
+    """One basic Tavily search (1 credit) on vivino.com only. Only the result text Tavily gives;
+    never the page itself (no raw content)."""
     client = client or httpx.Client(timeout=20)
-    r = client.get(ENDPOINT, params={"q": query, "count": 5, "extra_snippets": "true"},
-                   headers={"X-Subscription-Token": key, "Accept": "application/json",
-                            "User-Agent": config.USER_AGENT})
+    r = client.post(ENDPOINT, json={"query": query, "search_depth": "basic", "max_results": 5,
+                                    "include_domains": ["vivino.com"], "include_raw_content": False},
+                    headers={"Authorization": f"Bearer {key}", "Accept": "application/json",
+                             "User-Agent": config.USER_AGENT})
     r.raise_for_status()
     return r.json()
 
@@ -111,6 +114,9 @@ def search(key: str, query: str, client=None) -> dict:
 SNIPPET_RATING = [
     re.compile(r"(?:rating|beoordeling|rated|gemiddelde)[^0-9]{0,30}([1-5][.,]\d)\b", re.I),
     re.compile(r"\b([1-5][.,]\d)\s*(?:/\s*5|out of 5|van de 5|stars|sterren|★)", re.I),
+    # The page text as a search result gives it: "4.2 3,456 ratings", "4,1 (512 beoordelingen)"
+    re.compile(r"(?<![\d.,])([1-5][.,]\d)(?![\d.,]*\d)(?:\s+|\s*[(·|-]\s*)\d[\d.,]*\s*(?:ratings|beoordelingen|reviews)\b",
+               re.I),
 ]
 SNIPPET_COUNT = re.compile(r"([\d.,]+)\s*(?:ratings|beoordelingen|reviews)", re.I)
 
@@ -171,14 +177,14 @@ def _price_from_structured(r: dict) -> float | None:
 
 
 def candidates(result: dict) -> list[dict]:
-    """Vivino wine pages in a Brave result, with any rating the result carries."""
+    """Vivino wine pages in a search result (Tavily's, or Brave's from before), with any rating it carries."""
     out = []
-    for r in (result.get("web") or {}).get("results", []):
+    for r in (result.get("results") or []) + ((result.get("web") or {}).get("results") or []):
         url = r.get("url") or ""
         if "vivino.com" not in url or "/w/" not in url:
             continue
         title = re.sub(r"\s*[|-]\s*Vivino.*$", "", r.get("title") or "", flags=re.I).strip()
-        text = " ".join([r.get("description") or ""] + list(r.get("extra_snippets") or []))
+        text = " ".join([r.get("content") or r.get("description") or ""] + list(r.get("extra_snippets") or []))
         text = re.sub(r"<[^>]+>", "", text)
         rating, count, how = None, None, None
         structured = r.get("rating") or (r.get("product") or {}).get("rating") or {}
@@ -221,8 +227,9 @@ def search_name(name: str) -> str:
 
 
 def query_for(name: str, vintage=None) -> str:
-    # The vintage is left out: a Vivino wine page covers every vintage.
-    return f"site:vivino.com {search_name(name)}"
+    # The vintage is left out: a Vivino wine page covers every vintage. Only vivino.com is searched
+    # (include_domains), so the name is the whole query.
+    return f"{search_name(name)} vivino"
 
 
 def look_up(con, key: str, wine_id: int, client=None, today: dt.date | None = None) -> dict:
@@ -366,7 +373,7 @@ def weekly_due(con, now: dt.datetime) -> bool:
 
 
 def run_weekly(con, key: str | None = None, client=None, today: dt.date | None = None) -> dict:
-    """Look up this week's wines. Stops at the monthly limit or when Brave refuses the key."""
+    """Look up this week's wines. Stops at the monthly limit or when Tavily refuses the key."""
     import logging
 
     log = logging.getLogger("wijnkoop")
@@ -381,7 +388,7 @@ def run_weekly(con, key: str | None = None, client=None, today: dt.date | None =
                          (now, process_token(), f"looking up {len(wines)} wines")).lastrowid
     con.commit()
     found = failed = done = 0
-    note = None if key else "no Brave key"
+    note = None if key else "no Tavily key"
     if key and not room:
         note = f"the {MONTHLY_LIMIT} searches of this month are used"
     client = client or httpx.Client(timeout=20)
@@ -391,8 +398,8 @@ def run_weekly(con, key: str | None = None, client=None, today: dt.date | None =
             row = look_up(con, key, wine_id, client, today)
         except httpx.HTTPStatusError as e:
             failed += 1
-            if e.response.status_code in (401, 403, 429):  # wrong key, or the credit is used up
-                note = f"Brave answered {e.response.status_code}; stopped"
+            if e.response.status_code in (401, 403, 429, 432, 433):  # wrong key, or the free searches are used up
+                note = f"Tavily answered {e.response.status_code}; stopped"
                 break
             continue
         except (httpx.HTTPError, RuntimeError) as e:
