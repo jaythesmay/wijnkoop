@@ -140,21 +140,38 @@ def _wine_scores(con, now):
     rows = [r for r in rows if r["source"] != "shop page" or not (
         (r["wine_id"], r["short"], r["year"]) in official
         or (r["year"] is None and (r["wine_id"], r["short"]) in official_any))]
-    per_wine = defaultdict(list)
-    gold = set()
+    # Each source counts once per wine: the same "Luca Maroni 99" printed by two shops (or one shop's
+    # page read under two names) is one opinion, not two. A critic is one opinion of the wine, whatever
+    # the year of the guide; a competition counts once per year, and a result without a year joins
+    # that competition's dated result when there is one.
+    dated = {(r["wine_id"], r["short"]) for r in rows if r["year"] is not None and r["kind"] != "critic"}
+    results = defaultdict(list)
     info = {}
     for r in rows:
         s = award_score(r["medal"], r["points"], r["short"])
         info[r["wine_id"]] = (r["cuvee_id"], r["producer_key"])
         if s is None:
             continue
+        if r["kind"] == "critic":
+            year = None
+        elif r["year"] is None and (r["wine_id"], r["short"]) in dated:
+            continue
+        else:
+            year = r["year"]
         label = " ".join(str(x) for x in (r["short"], r["year"], r["medal"],
                                           f"{r['points']:g} pts" if r["points"] else None) if x)
-        per_wine[r["wine_id"]].append((s, r["weight"] or 0.4, label))
+        results[(r["wine_id"], r["short"], year)].append((s, r["weight"] or 0.4, label))
+    per_wine = defaultdict(list)
+    gold = set()
+    for (wine_id, short, _), found in results.items():
+        found = list({(sc, label): (sc, wt, label) for sc, wt, label in found}.values())
+        score = round(statistics.mean(sc for sc, _, _ in found), 1)
+        label = max(found)[2] if len({sc for sc, _, _ in found}) == 1 else f"{short}, average of {len(found)}"
+        per_wine[wine_id].append((score, max(wt for _, wt, _ in found), label))
         # "Gold or better": an award worth 93+ (an IWC or Decanter gold, a critic's 93), not every
         # medal called gold (a Gilbert & Gaillard gold is 85-89).
-        if s >= GOLD_POINTS:
-            gold.add(r["wine_id"])
+        if score >= GOLD_POINTS:
+            gold.add(wine_id)
 
     # The Vivino rating of the public counts lightly, as a small competition, never as gold.
     from . import vivino
