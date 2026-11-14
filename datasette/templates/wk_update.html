@@ -46,7 +46,7 @@ a big shop takes hours, because WijnKoop waits between pages as the shops ask.</
 {% for j in jobs %}
 <tr>
   <td>{% for key in j.shops.split(',') %}{% for s in shops if s.key == key %}{{ s.name }}{% if s.state == 'running' %} <span class="pill v-top">reading</span>{% elif s.state == 'queued' %} <span class="pill v-fair">waiting</span>{% elif s.state == 'paused' %} <span class="pill v-fair">paused</span>{% elif s.state == 'resuming' %} <span class="pill v-fair">carries on soon</span>{% else %} <span class="pill v-good">done</span>{% endif %}{% endfor %}{% if not loop.last %} · {% endif %}{% endfor %}
-    <div class="meta">Started {{ j.requested.replace('T', ' ')[:16] }}</div></td>
+    <div class="meta">{% if j.source == 'weekly' %}Weekly run, started{% else %}Started{% endif %} {{ j.requested.replace('T', ' ')[:16] }}{% set w = shops|selectattr('state', 'equalto', 'queued')|selectattr('key', 'in', j.shops.split(','))|list %}{% if w %} · {{ w|length }} shop{{ 's' if w|length != 1 }} {{ w[0].advice }}{% endif %}</div></td>
   <td class="num">
     <form method="post" action="/update">
       <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">

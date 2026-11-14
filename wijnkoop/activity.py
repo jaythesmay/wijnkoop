@@ -184,23 +184,21 @@ def queue(con, now: dt.datetime | None = None) -> list[dict]:
         for key in j["shops"].split(","):
             s = next((x for x in status["shops"] if x["key"] == key), None)
             if s and s["state"] == "queued":
-                out.append({"what": f"{s['name']}: shop run", "who": f"you, in the app (run {j['id']}, asked {j['requested'][11:16]})",
-                            "why": s["advice"] + (f" (at most {lim['max_runs']} shops at once, "
-                                                  f"{lim['max_browser_runs']} with the browser)"
-                                                  if "fewer shops" in s["advice"] else "")})
+                who = ("the weekly run" if j.get("source") == "weekly" else "you, in the app")
+                out.append({"what": f"{s['name']}: shop run", "who": f"{who} (run {j['id']}, asked {j['requested'][11:16]})",
+                            "why": s["advice"]})
     # Shops that answered "too many requests": they wait, then carry on by themselves
     for s in status.get("paused", []):
         out.append({"what": f"{s['name']}: shop run, paused", "who": "the shop asked us to slow down (HTTP 429)",
                     "why": s["advice"]})
     # 2. The weekly scheduler: one thing at a time, shops first
-    due = [k for k in SHOPS if k not in running and run_is_due(con, now, k)]
+    in_jobs = jobs.shops_in_live_jobs(con)
+    due = [k for k in SHOPS if k not in running and k not in in_jobs and run_is_due(con, now, k)]
     sched_busy = bool(running) or bool(due)
-    for n, key in enumerate(due):
-        free = jobs.slot_free(con, key)
+    for key in due:
         out.append({"what": f"{SHOPS[key].SHOP_NAME}: weekly shop run", "who": "the weekly scheduler",
-                    "why": "next up" if n == 0 and free else
-                           ("waiting until fewer shops are being read" if not free and n == 0 else
-                            "the scheduler reads the shops one after another")})
+                    "why": f"the scheduler starts it within 10 minutes, with at most {lim['max_runs']} "
+                           f"shop{'s' if lim['max_runs'] != 1 else ''} at once"})
     checks = []
     try:
         if mail_due(con, now):
