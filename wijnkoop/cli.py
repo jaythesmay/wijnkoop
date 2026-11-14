@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 
-from . import config, db, jobs, scores, vivino
+from . import config, db, jobs, quality, scores, vivino
 from .awards.importer import awards_due, match_awards, run_award_import
 from .collect import collect_shop, fetch_page, make_client
 from .mail import mail_due, run_mail, save_settings, send_overview
@@ -22,6 +22,18 @@ def cmd_init(args):
 def cmd_scores(args):
     con = db.connect()
     print(scores.recompute(con))
+    con.close()
+
+
+def cmd_quality(args):
+    """Go through the database for data quality problems (and look for award wines in the shops)."""
+    from . import quality
+
+    con = db.connect()
+    if quality.running(con):
+        print("The data quality checks are running already.")
+        return
+    print(quality.run_checks(con, look_for_awards=not args.quick))
     con.close()
 
 
@@ -156,6 +168,9 @@ def cmd_scheduler(args):
             if vivino.weekly_due(con, now):
                 vivino.run_weekly(con)
                 scores.recompute(con)
+                continue
+            if quality.weekly_due(con, now) and not quality.running(con):
+                quality.run_checks(con)
                 continue
         except Exception:
             log.exception("Scheduled job failed, trying again in 1 hour")
@@ -305,6 +320,9 @@ def main(argv=None):
     p.add_argument("--shop", default="gall", choices=list(SHOPS))
     p.set_defaults(func=cmd_check)
     sub.add_parser("scores", help="recompute scores and deals").set_defaults(func=cmd_scores)
+    p = sub.add_parser("quality", help="check the data for duplicates, wrong links and other problems")
+    p.add_argument("--quick", action="store_true", help="skip looking for uploaded award wines in the shops")
+    p.set_defaults(func=cmd_quality)
     p = sub.add_parser("awards", help="read IWC and Concours Mondial results now and link them to wines")
     p.add_argument("--source", action="append", choices=["iwc", "cmb"])
     p.add_argument("--match-only", action="store_true", help="only redo the linking to wines")
